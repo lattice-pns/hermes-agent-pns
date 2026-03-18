@@ -367,9 +367,10 @@ class LatticeAdapter(BasePlatformAdapter):
 
         text = body or "(empty notification)"
 
-        # Prepend sender attribution (human is in this thread; reply goes to them).
+        # Prepend sender attribution. The user is in this thread — reply directly;
+        # don't use send_message to "notify" them (they already see this).
         if sender:
-            text = f"[From agent {sender}]\n{text}"
+            text = f"[From agent {sender}. Reply here in this thread — the user sees it.]\n{text}"
 
         # Lattice always routes to the main platform — session_target is required.
         session_target = (self.config.extra or {}).get("session_target")
