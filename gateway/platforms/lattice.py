@@ -196,6 +196,7 @@ class LatticeAdapter(BasePlatformAdapter):
         self.client: httpx.AsyncClient | None = None
         self._sse_task: asyncio.Task | None = None
         self._running = False
+        self._get_adapters = None  # Injected by gateway for response delivery
 
         logger.info(
             "Lattice adapter initialized: url=%s topics=%s",
@@ -239,6 +240,10 @@ class LatticeAdapter(BasePlatformAdapter):
             self.client = None
 
         logger.info("Lattice: disconnected")
+
+    def set_adapters_getter(self, getter) -> None:
+        """Set callback to get platform adapters (for routing responses to main platform)."""
+        self._get_adapters = getter
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from Lattice server."""
@@ -404,10 +409,25 @@ class LatticeAdapter(BasePlatformAdapter):
             raw_message=data,
         )
 
-        if self._message_handler:
+        # Route through the target platform's handle_message so the response is
+        # sent back to the main thread (typing, media extraction, etc. like Telegram).
+        if self._get_adapters:
+            adapters = self._get_adapters()
+            target_adapter = adapters.get(target_platform) if adapters else None
+            if target_adapter and hasattr(target_adapter, "handle_message"):
+                await target_adapter.handle_message(event)
+            elif self._message_handler:
+                # Fallback if adapters not yet available
+                await self._message_handler(event)
+                logger.warning(
+                    "Lattice: response not delivered (target adapter missing)"
+                )
+        elif self._message_handler:
             await self._message_handler(event)
         else:
-            logger.warning("Lattice: no message handler set, dropping notification")
+            logger.warning(
+                "Lattice: no adapters or message handler, dropping notification"
+            )
 
     async def send(
         self,
