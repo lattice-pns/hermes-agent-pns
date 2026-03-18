@@ -72,9 +72,12 @@ def _ensure_lattice_key() -> str:
     # Persist to ~/.hermes/.env
     try:
         from hermes_cli.config import save_env_value
+
         save_env_value("LATTICE_PRIVATE_KEY_HEX", privkey)
         os.environ["LATTICE_PRIVATE_KEY_HEX"] = privkey
-        logger.info("Lattice: generated and persisted new Ed25519 key to ~/.hermes/.env")
+        logger.info(
+            "Lattice: generated and persisted new Ed25519 key to ~/.hermes/.env"
+        )
     except Exception as e:
         logger.warning("Lattice: could not persist key to .env: %s", e)
         os.environ["LATTICE_PRIVATE_KEY_HEX"] = privkey
@@ -93,10 +96,14 @@ def get_lattice_public_key() -> str | None:
 
         privkey = _ensure_lattice_key()
         key = Ed25519PrivateKey.from_private_bytes(bytes.fromhex(privkey))
-        pubkey_hex = key.public_key().public_bytes(
-            encoding=Encoding.Raw,
-            format=PublicFormat.Raw,
-        ).hex()
+        pubkey_hex = (
+            key.public_key()
+            .public_bytes(
+                encoding=Encoding.Raw,
+                format=PublicFormat.Raw,
+            )
+            .hex()
+        )
         return pubkey_hex
     except Exception as e:
         logger.warning("Could not get Lattice public key: %s", e)
@@ -324,7 +331,9 @@ class LatticeAdapter(BasePlatformAdapter):
                 topics = data.get("topics", [])
                 logger.info(
                     "Lattice: connected — device token=%s topics=%s",
-                    device_token[:16] + "..." if len(device_token) > 16 else device_token,
+                    device_token[:16] + "..."
+                    if len(device_token) > 16
+                    else device_token,
                     topics,
                 )
             except json.JSONDecodeError:
@@ -355,7 +364,7 @@ class LatticeAdapter(BasePlatformAdapter):
             text = (
                 f"[Agent-to-agent message from {sender}. "
                 f"You are in a machine-to-machine conversation, not talking to a human. "
-                f"Respond concisely. Use the lattice_send_agent tool with to=\"{sender}\" to reply back to this agent if needed.]\n"
+                f'Respond concisely. Use the lattice_send_agent tool with to="{sender}" to reply back to this agent if needed.]\n'
                 f"{text}"
             )
 
@@ -395,12 +404,6 @@ class LatticeAdapter(BasePlatformAdapter):
             "Content-Type": "application/json",
             **_get_post_auth_headers(self._privkey_hex, body_str),
         }
-        pubkey_hex = headers.get("X-Agent-Pubkey", "")
-        logger.info(
-            "Lattice send: to=%s...%s pubkey=%s...%s",
-            chat_id[:8], chat_id[-4:] if len(chat_id) >= 12 else chat_id,
-            pubkey_hex[:8], pubkey_hex[-8:],
-        )
         try:
             resp = await self.client.post(
                 f"{self._lattice_url}/send", content=body_bytes, headers=headers
@@ -408,9 +411,13 @@ class LatticeAdapter(BasePlatformAdapter):
             if resp.status_code == 404:
                 return SendResult(success=False, error="Agent not connected")
             if resp.status_code == 401:
+                pubkey_hex = headers.get("X-Agent-Pubkey", "")
                 logger.warning(
-                    "Lattice 401 Invalid signature: pubkey=%s... to=%s body_str=%r",
-                    headers.get("X-Agent-Pubkey", "")[:16], chat_id[:16], body_str,
+                    "Lattice 401: pubkey=%s...%s to=%s body=%r",
+                    pubkey_hex[:8],
+                    pubkey_hex[-8:],
+                    chat_id[:16],
+                    body_str,
                 )
             resp.raise_for_status()
             return SendResult(success=True)

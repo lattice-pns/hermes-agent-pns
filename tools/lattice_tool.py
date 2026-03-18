@@ -69,10 +69,6 @@ def _get_post_auth_headers(privkey_hex: str, body_str: str) -> dict:
     signature = private_key.sign(payload)
     sig_hex = signature.hex()
 
-    logger.debug(
-        "Lattice auth: pubkey=%s...%s timestamp=%d payload_len=%d",
-        pubkey_hex[:8], pubkey_hex[-8:], timestamp, len(payload),
-    )
     return {
         "X-Agent-Pubkey": pubkey_hex,
         "X-Timestamp": str(timestamp),
@@ -94,24 +90,35 @@ async def lattice_send_agent_tool(args: Dict[str, Any], **kwargs) -> str:
     if not body_text:
         return json.dumps({"error": "Missing required parameter: body"})
 
-    lattice_url = (get_env_value("LATTICE_URL") or os.getenv("LATTICE_URL", "")).rstrip("/")
-    privkey_hex = (get_env_value("LATTICE_PRIVATE_KEY_HEX") or os.getenv("LATTICE_PRIVATE_KEY_HEX", "")).strip()
+    lattice_url = (get_env_value("LATTICE_URL") or os.getenv("LATTICE_URL", "")).rstrip(
+        "/"
+    )
+    privkey_hex = (
+        get_env_value("LATTICE_PRIVATE_KEY_HEX")
+        or os.getenv("LATTICE_PRIVATE_KEY_HEX", "")
+    ).strip()
 
     if not lattice_url:
         return json.dumps({"error": "LATTICE_URL environment variable is not set"})
     if not privkey_hex:
-        return json.dumps({"error": "LATTICE_PRIVATE_KEY_HEX environment variable is not set"})
+        return json.dumps(
+            {"error": "LATTICE_PRIVATE_KEY_HEX environment variable is not set"}
+        )
 
     # Normalize key: strip non-hex (invisible chars, accidental spaces from paste)
     raw_key_len = len(privkey_hex)
-    privkey_hex = "".join(c for c in privkey_hex if c in "0123456789abcdefABCDEF").lower()
+    privkey_hex = "".join(
+        c for c in privkey_hex if c in "0123456789abcdefABCDEF"
+    ).lower()
     if len(privkey_hex) != 64:
-        return json.dumps({
-            "error": (
-                f"LATTICE_PRIVATE_KEY_HEX must be exactly 64 hex chars (got {len(privkey_hex)}). "
-                f"Raw length was {raw_key_len}. Check ~/.hermes/.env for truncation."
-            )
-        })
+        return json.dumps(
+            {
+                "error": (
+                    f"LATTICE_PRIVATE_KEY_HEX must be exactly 64 hex chars (got {len(privkey_hex)}). "
+                    f"Raw length was {raw_key_len}. Check ~/.hermes/.env for truncation."
+                )
+            }
+        )
 
     # Use exact serialization for both signing and sending — Lattice server verifies
     # signature against JSON.stringify(parsed_body), so we must match that format.
@@ -126,40 +133,33 @@ async def lattice_send_agent_tool(args: Dict[str, Any], **kwargs) -> str:
             **_get_post_auth_headers(privkey_hex, body_str),
         }
     except Exception as e:
-        logger.warning("Lattice auth header build failed: %s", e)
         return json.dumps({"error": f"Failed to build auth headers: {e}"})
-
-    send_url = f"{lattice_url}/send"
-    pubkey_hex = headers["X-Agent-Pubkey"]
-    timestamp = headers["X-Timestamp"]
-    logger.info(
-        "Lattice send: to=%s...%s pubkey=%s...%s url=%s",
-        to[:8], to[-4:] if len(to) >= 12 else to,
-        pubkey_hex[:8], pubkey_hex[-8:],
-        send_url,
-    )
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(send_url, content=body_bytes, headers=headers)
-            logger.info("Lattice send response: status=%d %s", resp.status_code, resp.text[:150])
+            resp = await client.post(
+                f"{lattice_url}/send", content=body_bytes, headers=headers
+            )
             if resp.status_code == 404:
                 return json.dumps({"error": "Agent not connected"})
             if resp.status_code == 401:
+                pubkey_hex = headers["X-Agent-Pubkey"]
                 logger.warning(
-                    "Lattice 401 Invalid signature: pubkey=%s timestamp=%s body_str=%r "
-                    "(server verifies signature over body_str;timestamp)",
-                    pubkey_hex, timestamp, body_str,
+                    "Lattice 401: pubkey=%s...%s timestamp=%s body=%r",
+                    pubkey_hex[:8],
+                    pubkey_hex[-8:],
+                    headers["X-Timestamp"],
+                    body_str,
                 )
             resp.raise_for_status()
-            logger.debug("Lattice send success: to=%s", to[:16])
             return json.dumps({"success": True})
     except httpx.HTTPStatusError as e:
         err = f"HTTP {e.response.status_code}: {e.response.text[:200]}"
         if e.response.status_code == 401:
+            pubkey_hex = headers.get("X-Agent-Pubkey", "")
             err += (
                 f" Sender pubkey: {pubkey_hex[:16]}...{pubkey_hex[-8:]}. "
-                "Check: same key in ~/.hermes/.env for this process; restart gateway if changed; clock ±30s."
+                "Check: same key in ~/.hermes/.env; restart gateway if changed; clock ±30s."
             )
         return json.dumps({"error": err})
     except Exception as e:
@@ -170,6 +170,7 @@ def check_lattice_send_requirements() -> bool:
     """Return True if LATTICE_URL is configured."""
     try:
         from hermes_cli.config import get_env_value
+
         return bool(get_env_value("LATTICE_URL") or os.getenv("LATTICE_URL"))
     except ImportError:
         return bool(os.getenv("LATTICE_URL"))
