@@ -258,6 +258,11 @@ def _run_single_child(
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
     """
+    import model_tools
+
+    # Save parent's tool names before child can overwrite the process-global.
+    _saved_tool_names = list(model_tools._last_resolved_tool_names)
+
     child_start = time.monotonic()
 
     # Get the progress callback from the child agent
