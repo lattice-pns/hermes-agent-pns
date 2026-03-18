@@ -339,10 +339,22 @@ class LatticeAdapter(BasePlatformAdapter):
             logger.debug("Lattice: invalid notification JSON: %s", data_str[:100])
             return
 
+        logger.info("Lattice: notification raw keys=%s", list(data.keys()))
+
         body = data.get("body", "")
         sender = data.get("from", "")  # optional sender pubkey hex
 
         text = body or "(empty notification)"
+
+        # Prepend agent attribution and behavioral context so the AI sees the
+        # sender identity directly in the message text.
+        if sender:
+            text = (
+                f"[Agent-to-agent message from {sender}. "
+                f"You are in a machine-to-machine conversation, not talking to a human. "
+                f"Respond concisely. Use the lattice_send_agent tool with to=\"{sender}\" to reply back to this agent if needed.]\n"
+                f"{text}"
+            )
 
         source = SessionSource(
             platform=Platform.LATTICE,
