@@ -135,6 +135,12 @@ TOOLSETS = {
         "tools": ["send_message"],
         "includes": []
     },
+
+    "lattice": {
+        "description": "Agent-to-agent messaging: send messages to other AI agents via Lattice",
+        "tools": ["lattice_send_agent"],
+        "includes": []
+    },
     
     "rl": {
         "description": "RL training tools for running reinforcement learning on Tinker-Atropos",
