@@ -105,6 +105,7 @@ async def lattice_send_agent_tool(args: Dict[str, Any], **kwargs) -> str:
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
             resp = await client.post(f"{lattice_url}/send", content=body_bytes, headers=headers)
+            logger.info("Lattice send: status=%d body=%s", resp.status_code, resp.text[:200])
             if resp.status_code == 404:
                 return json.dumps({"error": "Agent not connected"})
             resp.raise_for_status()
