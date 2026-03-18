@@ -386,13 +386,14 @@ class LatticeAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         body = {"to": chat_id, "body": content}
+        body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
         headers = {
             "Content-Type": "application/json",
             **_get_post_auth_headers(self._privkey_hex, body),
         }
         try:
             resp = await self.client.post(
-                f"{self._lattice_url}/send", json=body, headers=headers
+                f"{self._lattice_url}/send", content=body_bytes, headers=headers
             )
             if resp.status_code == 404:
                 return SendResult(success=False, error="Agent not connected")

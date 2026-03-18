@@ -93,6 +93,7 @@ async def lattice_send_agent_tool(args: Dict[str, Any], **kwargs) -> str:
         return json.dumps({"error": "LATTICE_PRIVATE_KEY_HEX environment variable is not set"})
 
     body = {"to": to, "body": body_text}
+    body_bytes = json.dumps(body, separators=(",", ":")).encode("utf-8")
     try:
         headers = {
             "Content-Type": "application/json",
@@ -103,7 +104,7 @@ async def lattice_send_agent_tool(args: Dict[str, Any], **kwargs) -> str:
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            resp = await client.post(f"{lattice_url}/send", json=body, headers=headers)
+            resp = await client.post(f"{lattice_url}/send", content=body_bytes, headers=headers)
             if resp.status_code == 404:
                 return json.dumps({"error": "Agent not connected"})
             resp.raise_for_status()
