@@ -151,22 +151,135 @@ def _is_custom_endpoint(base_url: str) -> bool:
     return bool(normalized) and not _is_openrouter_base_url(normalized)
 
 
+_URL_TO_PROVIDER: Dict[str, str] = {
+    "api.openai.com": "openai",
+    "chatgpt.com": "openai",
+    "api.anthropic.com": "anthropic",
+    "api.z.ai": "zai",
+    "api.moonshot.ai": "kimi-coding",
+    "api.kimi.com": "kimi-coding",
+    "api.minimax": "minimax",
+    "dashscope.aliyuncs.com": "alibaba",
+    "dashscope-intl.aliyuncs.com": "alibaba",
+    "openrouter.ai": "openrouter",
+    "inference-api.nousresearch.com": "nous",
+    "api.deepseek.com": "deepseek",
+}
+
+
+def _infer_provider_from_url(base_url: str) -> Optional[str]:
+    """Infer the models.dev provider name from a base URL.
+
+    This allows context length resolution via models.dev for custom endpoints
+    like DashScope (Alibaba), Z.AI, Kimi, etc. without requiring the user to
+    explicitly set the provider name in config.
+    """
+    normalized = _normalize_base_url(base_url)
+    if not normalized:
+        return None
+    parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
+    host = parsed.netloc.lower() or parsed.path.lower()
+    for url_part, provider in _URL_TO_PROVIDER.items():
+        if url_part in host:
+            return provider
+    return None
+
+
 def _is_known_provider_base_url(base_url: str) -> bool:
+    return _infer_provider_from_url(base_url) is not None
+
+
+def is_local_endpoint(base_url: str) -> bool:
+    """Return True if base_url points to a local machine (localhost / RFC-1918 / WSL)."""
     normalized = _normalize_base_url(base_url)
     if not normalized:
         return False
-    parsed = urlparse(normalized if "://" in normalized else f"https://{normalized}")
-    host = parsed.netloc.lower() or parsed.path.lower()
-    known_hosts = (
-        "api.openai.com",
-        "chatgpt.com",
-        "api.anthropic.com",
-        "api.z.ai",
-        "api.moonshot.ai",
-        "api.kimi.com",
-        "api.minimax",
-    )
-    return any(known_host in host for known_host in known_hosts)
+    url = normalized if "://" in normalized else f"http://{normalized}"
+    try:
+        parsed = urlparse(url)
+        host = parsed.hostname or ""
+    except Exception:
+        return False
+    if host in _LOCAL_HOSTS:
+        return True
+    # RFC-1918 private ranges and link-local
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(host)
+        return addr.is_private or addr.is_loopback or addr.is_link_local
+    except ValueError:
+        pass
+    # Bare IP that looks like a private range (e.g. 172.26.x.x for WSL)
+    parts = host.split(".")
+    if len(parts) == 4:
+        try:
+            first, second = int(parts[0]), int(parts[1])
+            if first == 10:
+                return True
+            if first == 172 and 16 <= second <= 31:
+                return True
+            if first == 192 and second == 168:
+                return True
+        except ValueError:
+            pass
+    return False
+
+
+def detect_local_server_type(base_url: str) -> Optional[str]:
+    """Detect which local server is running at base_url by probing known endpoints.
+
+    Returns one of: "ollama", "lm-studio", "vllm", "llamacpp", or None.
+    """
+    import httpx
+
+    normalized = _normalize_base_url(base_url)
+    server_url = normalized
+    if server_url.endswith("/v1"):
+        server_url = server_url[:-3]
+
+    try:
+        with httpx.Client(timeout=2.0) as client:
+            # LM Studio exposes /api/v1/models — check first (most specific)
+            try:
+                r = client.get(f"{server_url}/api/v1/models")
+                if r.status_code == 200:
+                    return "lm-studio"
+            except Exception:
+                pass
+            # Ollama exposes /api/tags and responds with {"models": [...]}
+            # LM Studio returns {"error": "Unexpected endpoint"} with status 200
+            # on this path, so we must verify the response contains "models".
+            try:
+                r = client.get(f"{server_url}/api/tags")
+                if r.status_code == 200:
+                    try:
+                        data = r.json()
+                        if "models" in data:
+                            return "ollama"
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            # llama.cpp exposes /props
+            try:
+                r = client.get(f"{server_url}/props")
+                if r.status_code == 200 and "default_generation_settings" in r.text:
+                    return "llamacpp"
+            except Exception:
+                pass
+            # vLLM: /version
+            try:
+                r = client.get(f"{server_url}/version")
+                if r.status_code == 200:
+                    data = r.json()
+                    if "version" in data:
+                        return "vllm"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    return None
 
 
 def is_local_endpoint(base_url: str) -> bool:
@@ -808,13 +921,21 @@ def get_model_context_length(
     # These are provider-specific and take priority over the generic OR cache,
     # since the same model can have different context limits per provider
     # (e.g. claude-opus-4.6 is 1M on Anthropic but 128K on GitHub Copilot).
-    if provider == "nous":
+    # If provider is generic (openrouter/custom/empty), try to infer from URL.
+    effective_provider = provider
+    if not effective_provider or effective_provider in ("openrouter", "custom"):
+        if base_url:
+            inferred = _infer_provider_from_url(base_url)
+            if inferred:
+                effective_provider = inferred
+
+    if effective_provider == "nous":
         ctx = _resolve_nous_context_length(model)
         if ctx:
             return ctx
-    if provider:
+    if effective_provider:
         from agent.models_dev import lookup_models_dev_context
-        ctx = lookup_models_dev_context(provider, model)
+        ctx = lookup_models_dev_context(effective_provider, model)
         if ctx:
             return ctx
 
