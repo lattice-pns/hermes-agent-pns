@@ -136,7 +136,7 @@ class LatticeAdapter(BasePlatformAdapter):
         self.client: httpx.AsyncClient | None = None
         self._sse_task: asyncio.Task | None = None
         self._running = False
-        self._get_adapters = None  # Injected by gateway for response delivery
+        self.gateway_runner = None  # Injected by gateway for cross-platform delivery
         self._last_event_id: str = ""
 
         logger.info(
@@ -181,10 +181,6 @@ class LatticeAdapter(BasePlatformAdapter):
             self.client = None
 
         logger.info("Lattice: disconnected")
-
-    def set_adapters_getter(self, getter) -> None:
-        """Set callback to get platform adapters (for routing responses to main platform)."""
-        self._get_adapters = getter
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from Lattice server."""
@@ -358,22 +354,20 @@ class LatticeAdapter(BasePlatformAdapter):
 
         # Route through the target platform's handle_message so the response is
         # sent back to the main thread (typing, media extraction, etc. like Telegram).
-        if self._get_adapters:
-            adapters = self._get_adapters()
-            target_adapter = adapters.get(target_platform) if adapters else None
+        if self.gateway_runner:
+            target_adapter = self.gateway_runner.adapters.get(target_platform)
             if target_adapter and hasattr(target_adapter, "handle_message"):
                 await target_adapter.handle_message(event)
-            elif self._message_handler:
-                # Fallback if adapters not yet available
-                await self._message_handler(event)
+            else:
                 logger.warning(
-                    "Lattice: response not delivered (target adapter missing)"
+                    "Lattice: target adapter %s not available, dropping notification",
+                    target_platform.value,
                 )
         elif self._message_handler:
             await self._message_handler(event)
         else:
             logger.warning(
-                "Lattice: no adapters or message handler, dropping notification"
+                "Lattice: no gateway_runner or message handler, dropping notification"
             )
 
     async def send(

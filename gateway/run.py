@@ -902,7 +902,7 @@ class GatewayRunner:
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             if platform == Platform.LATTICE:
-                adapter.set_adapters_getter(lambda: self.adapters)
+                adapter.gateway_runner = self
             
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
