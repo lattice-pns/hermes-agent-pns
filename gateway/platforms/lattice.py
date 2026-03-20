@@ -5,8 +5,8 @@ Connects to a Lattice push notification server via SSE.
 Inbound notifications are routed through the gateway message handler,
 which will call agent.interrupt() if an agent is running or start a new conversation.
 
-Requires:
-- LATTICE_URL env var (required to enable)
+Configuration:
+- LATTICE_URL env var (optional; defaults to https://pns.1lattice.co)
 - LATTICE_PRIVATE_KEY_HEX (optional; auto-generated and persisted on first run)
 - LATTICE_TOPICS (optional; comma-separated topics to subscribe to)
 
@@ -39,11 +39,12 @@ logger = logging.getLogger(__name__)
 
 SSE_RETRY_DELAY_INITIAL = 2.0
 SSE_RETRY_DELAY_MAX = 60.0
+DEFAULT_LATTICE_URL = "https://pns.1lattice.co"
 
 
 def check_lattice_requirements() -> bool:
-    """Check if Lattice is configured (LATTICE_URL is set)."""
-    return bool(os.getenv("LATTICE_URL"))
+    """Lattice is always available — defaults to pns.lattice.co if LATTICE_URL is unset."""
+    return True
 
 
 def _ensure_lattice_key() -> str:
@@ -127,7 +128,7 @@ class LatticeAdapter(BasePlatformAdapter):
         super().__init__(config, Platform.LATTICE)
 
         extra = config.extra or {}
-        url = extra.get("url") or os.getenv("LATTICE_URL", "")
+        url = extra.get("url") or os.getenv("LATTICE_URL", DEFAULT_LATTICE_URL)
         self._lattice_url: str = url.rstrip("/")
         topics = extra.get("topics") or os.getenv("LATTICE_TOPICS", "")
         self._topics: str = topics.strip()
@@ -136,7 +137,7 @@ class LatticeAdapter(BasePlatformAdapter):
         self.client: httpx.AsyncClient | None = None
         self._sse_task: asyncio.Task | None = None
         self._running = False
-        self._get_adapters = None  # Injected by gateway for response delivery
+        self.gateway_runner = None  # Injected by gateway for cross-platform delivery
         self._last_event_id: str = ""
 
         logger.info(
@@ -148,7 +149,7 @@ class LatticeAdapter(BasePlatformAdapter):
     async def connect(self) -> bool:
         """Connect to Lattice and start SSE listener."""
         if not self._lattice_url:
-            logger.error("Lattice: LATTICE_URL is required")
+            logger.error("Lattice: no URL configured")
             return False
 
         try:
@@ -181,10 +182,6 @@ class LatticeAdapter(BasePlatformAdapter):
             self.client = None
 
         logger.info("Lattice: disconnected")
-
-    def set_adapters_getter(self, getter) -> None:
-        """Set callback to get platform adapters (for routing responses to main platform)."""
-        self._get_adapters = getter
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from Lattice server."""
@@ -358,22 +355,20 @@ class LatticeAdapter(BasePlatformAdapter):
 
         # Route through the target platform's handle_message so the response is
         # sent back to the main thread (typing, media extraction, etc. like Telegram).
-        if self._get_adapters:
-            adapters = self._get_adapters()
-            target_adapter = adapters.get(target_platform) if adapters else None
+        if self.gateway_runner:
+            target_adapter = self.gateway_runner.adapters.get(target_platform)
             if target_adapter and hasattr(target_adapter, "handle_message"):
                 await target_adapter.handle_message(event)
-            elif self._message_handler:
-                # Fallback if adapters not yet available
-                await self._message_handler(event)
+            else:
                 logger.warning(
-                    "Lattice: response not delivered (target adapter missing)"
+                    "Lattice: target adapter %s not available, dropping notification",
+                    target_platform.value,
                 )
         elif self._message_handler:
             await self._message_handler(event)
         else:
             logger.warning(
-                "Lattice: no adapters or message handler, dropping notification"
+                "Lattice: no gateway_runner or message handler, dropping notification"
             )
 
     async def send(
