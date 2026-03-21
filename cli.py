@@ -211,7 +211,7 @@ def load_cli_config() -> Dict[str, Any]:
                 "hype": "YOOO LET'S GOOOO!!! I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS!",
             },
         },
-        "toolsets": ["all"],
+
         "display": {
             "compact": False,
             "resume_display": "full",
@@ -760,7 +760,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
 # - Dim: #B8860B (muted text)
 
 # ANSI building blocks for conversation display
-_GOLD = "\033[1;33m"    # Bold yellow — closest universal match to the gold theme
+_GOLD = "\033[1;38;2;255;215;0m"  # True-color #FFD700 bold — matches Rich Panel gold
 _BOLD = "\033[1m"
 _DIM = "\033[2m"
 _RST = "\033[0m"
@@ -1473,8 +1473,14 @@ class HermesCLI:
         Opens a dim reasoning box on first token, streams line-by-line.
         The box is closed automatically when content tokens start arriving
         (via _stream_delta → _emit_stream_text).
+
+        Once the response box is open, suppress any further reasoning
+        rendering — a late thinking block (e.g. after an interrupt) would
+        otherwise draw a reasoning box inside the response box.
         """
         if not text:
+            return
+        if getattr(self, "_stream_box_opened", False):
             return
 
         # Open reasoning box on first reasoning token
@@ -1620,8 +1626,19 @@ class HermesCLI:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
                 label = _skin.get_branding("response_label", "⚕ Hermes")
+                _text_hex = _skin.get_color("banner_text", "#FFF8DC")
             except Exception:
                 label = "⚕ Hermes"
+                _text_hex = "#FFF8DC"
+            # Build a true-color ANSI escape for the response text color
+            # so streamed content matches the Rich Panel appearance.
+            try:
+                _r = int(_text_hex[1:3], 16)
+                _g = int(_text_hex[3:5], 16)
+                _b = int(_text_hex[5:7], 16)
+                self._stream_text_ansi = f"\033[38;2;{_r};{_g};{_b}m"
+            except (ValueError, IndexError):
+                self._stream_text_ansi = ""
             w = shutil.get_terminal_size().columns
             fill = w - 2 - len(label)
             _cprint(f"\n{_GOLD}╭─{label}{'─' * max(fill - 1, 0)}╮{_RST}")
@@ -1629,9 +1646,10 @@ class HermesCLI:
         self._stream_buf += text
 
         # Emit complete lines, keep partial remainder in buffer
+        _tc = getattr(self, "_stream_text_ansi", "")
         while "\n" in self._stream_buf:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
-            _cprint(line)
+            _cprint(f"{_tc}{line}{_RST}" if _tc else line)
 
     def _flush_stream(self) -> None:
         """Emit any remaining partial line from the stream buffer and close the box."""
@@ -1639,7 +1657,8 @@ class HermesCLI:
         self._close_reasoning_box()
 
         if self._stream_buf:
-            _cprint(self._stream_buf)
+            _tc = getattr(self, "_stream_text_ansi", "")
+            _cprint(f"{_tc}{self._stream_buf}{_RST}" if _tc else self._stream_buf)
             self._stream_buf = ""
 
         # Close the response box
@@ -1652,6 +1671,7 @@ class HermesCLI:
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
         self._reasoning_box_opened = False
@@ -4573,15 +4593,27 @@ class HermesCLI:
     # ====================================================================
 
     def _on_tool_progress(self, function_name: str, preview: str, function_args: dict):
-        """Called when a tool starts executing. Plays audio cue in voice mode."""
+        """Called when a tool starts executing.
+
+        Updates the TUI spinner widget so the user can see what the agent
+        is doing during tool execution (fills the gap between thinking
+        spinner and next response).  Also plays audio cue in voice mode.
+        """
+        if not function_name.startswith("_"):
+            from agent.display import get_tool_emoji
+            emoji = get_tool_emoji(function_name)
+            label = preview or function_name
+            if len(label) > 50:
+                label = label[:47] + "..."
+            self._spinner_text = f"{emoji} {label}"
+            self._invalidate()
+
         if not self._voice_mode:
             return
-        # Skip internal/thinking tools
         if function_name.startswith("_"):
             return
         try:
             from tools.voice_mode import play_beep
-            # Short, subtle tick sound (higher pitch, very brief)
             threading.Thread(
                 target=play_beep,
                 kwargs={"frequency": 1200, "duration": 0.06, "count": 1},
@@ -6851,28 +6883,34 @@ class HermesCLI:
                     paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
                     if paste_match:
                         paste_path = Path(paste_match.group(1))
+                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if paste_path.exists():
                             full_text = paste_path.read_text(encoding="utf-8")
                             line_count = full_text.count('\n') + 1
                             print()
+                            ChatConsole().print(_user_bar)
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
                             )
                             user_input = full_text
                         else:
                             print()
+                            ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     else:
+                        _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:
                             first_line = user_input.split('\n')[0]
                             line_count = user_input.count('\n') + 1
                             print()
+                            ChatConsole().print(_user_bar)
                             ChatConsole().print(
                                 f"[bold {_accent_hex()}]●[/] [bold]{_escape(first_line)}[/] "
                                 f"[dim](+{line_count - 1} lines)[/]"
                             )
                         else:
                             print()
+                            ChatConsole().print(_user_bar)
                             ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
                     
                     # Show image attachment count
