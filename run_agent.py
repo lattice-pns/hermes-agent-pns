@@ -108,7 +108,7 @@ HONCHO_TOOL_NAMES = {
 
 
 class _SafeWriter:
-    """Transparent stdio wrapper that catches OSError from broken pipes.
+    """Transparent stdio wrapper that catches OSError/ValueError from broken pipes.
 
     When hermes-agent runs as a systemd service, Docker container, or headless
     daemon, the stdout/stderr pipe can become unavailable (idle timeout, buffer
@@ -117,8 +117,13 @@ class _SafeWriter:
     run_conversation() — especially via double-fault when an except handler
     also tries to print.
 
+    Additionally, when subagents run in ThreadPoolExecutor threads, the shared
+    stdout handle can close between thread teardown and cleanup, raising
+    ``ValueError: I/O operation on closed file`` instead of OSError.
+
     This wrapper delegates all writes to the underlying stream and silently
-    catches OSError. It is transparent when the wrapped stream is healthy.
+    catches both OSError and ValueError. It is transparent when the wrapped
+    stream is healthy.
     """
 
     __slots__ = ("_inner",)
@@ -129,13 +134,13 @@ class _SafeWriter:
     def write(self, data):
         try:
             return self._inner.write(data)
-        except OSError:
+        except (OSError, ValueError):
             return len(data) if isinstance(data, str) else 0
 
     def flush(self):
         try:
             self._inner.flush()
-        except OSError:
+        except (OSError, ValueError):
             pass
 
     def fileno(self):
@@ -144,7 +149,7 @@ class _SafeWriter:
     def isatty(self):
         try:
             return self._inner.isatty()
-        except OSError:
+        except (OSError, ValueError):
             return False
 
     def __getattr__(self, name):
@@ -473,6 +478,11 @@ class AIAgent:
         self.quiet_mode = quiet_mode
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
+        # Pluggable print function — CLI replaces this with _cprint so that
+        # raw ANSI status lines are routed through prompt_toolkit's renderer
+        # instead of going directly to stdout where patch_stdout's StdoutProxy
+        # would mangle the escape sequences.  None = use builtins.print.
+        self._print_fn = None
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
         self.log_prefix_chars = log_prefix_chars
@@ -660,6 +670,9 @@ class AIAgent:
         # Internal stream callback (set during streaming TTS).
         # Initialized here so _vprint can reference it before run_conversation.
         self._stream_callback = None
+        # Deferred paragraph break flag — set after tool iterations so a
+        # single "\n\n" is prepended to the next real text delta.
+        self._stream_needs_break = False
 
         # Optional current-turn user-message override used when the API-facing
         # user message intentionally differs from the persisted transcript
@@ -736,6 +749,16 @@ class AIAgent:
                     if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
                         client_kwargs["default_headers"] = dict(_routed_client._default_headers)
                 else:
+                    # When the user explicitly chose a non-OpenRouter provider
+                    # but no credentials were found, fail fast with a clear
+                    # message instead of silently routing through OpenRouter.
+                    _explicit = (self.provider or "").strip().lower()
+                    if _explicit and _explicit not in ("auto", "openrouter", "custom"):
+                        raise RuntimeError(
+                            f"Provider '{_explicit}' is set in config.yaml but no API key "
+                            f"was found. Set the {_explicit.upper()}_API_KEY environment "
+                            f"variable, or switch to a different provider with `hermes model`."
+                        )
                     # Final fallback: try raw OpenRouter key
                     client_kwargs = {
                         "api_key": os.getenv("OPENROUTER_API_KEY", ""),
@@ -1101,16 +1124,21 @@ class AIAgent:
             self.context_compressor.compression_count = 0
             self.context_compressor._context_probed = False
     
-    @staticmethod
-    def _safe_print(*args, **kwargs):
+    def _safe_print(self, *args, **kwargs):
         """Print that silently handles broken pipes / closed stdout.
 
         In headless environments (systemd, Docker, nohup) stdout may become
         unavailable mid-session.  A raw ``print()`` raises ``OSError`` which
         can crash cron jobs and lose completed work.
+
+        Internally routes through ``self._print_fn`` (default: builtin
+        ``print``) so callers such as the CLI can inject a renderer that
+        handles ANSI escape sequences properly (e.g. prompt_toolkit's
+        ``print_formatted_text(ANSI(...))``) without touching this method.
         """
         try:
-            print(*args, **kwargs)
+            fn = self._print_fn or print
+            fn(*args, **kwargs)
         except OSError:
             pass
 
@@ -2418,7 +2446,6 @@ class AIAgent:
                 "Pre-call sanitizer: added %d stub tool result(s)",
                 len(missing_results),
             )
-
         return messages
 
     @staticmethod
@@ -3447,6 +3474,13 @@ class AIAgent:
 
     def _fire_stream_delta(self, text: str) -> None:
         """Fire all registered stream delta callbacks (display + TTS)."""
+        # If a tool iteration set the break flag, prepend a single paragraph
+        # break before the first real text delta.  This prevents the original
+        # problem (text concatenation across tool boundaries) without stacking
+        # blank lines when multiple tool iterations run back-to-back.
+        if getattr(self, "_stream_needs_break", False) and text and text.strip():
+            self._stream_needs_break = False
+            text = "\n\n" + text
         for cb in (self.stream_delta_callback, self._stream_callback):
             if cb is not None:
                 try:
@@ -6732,8 +6766,13 @@ class AIAgent:
                     _msg_count_before_tools = len(messages)
                     self._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
 
-                    # Signal iteration boundary to stream consumers to prevent text concatenation
-                    self._fire_stream_delta("\n\n")
+                    # Signal that a paragraph break is needed before the next
+                    # streamed text.  We don't emit it immediately because
+                    # multiple consecutive tool iterations would stack up
+                    # redundant blank lines.  Instead, _fire_stream_delta()
+                    # will prepend a single "\n\n" the next time real text
+                    # arrives.
+                    self._stream_needs_break = True
 
                     # Refund the iteration if the ONLY tool(s) called were
                     # execute_code (programmatic tool calling).  These are

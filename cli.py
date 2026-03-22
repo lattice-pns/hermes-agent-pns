@@ -180,7 +180,7 @@ def load_cli_config() -> Dict[str, Any]:
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
-            "summary_model": "google/gemini-3-flash-preview",  # Fast/cheap model for summaries
+            "summary_model": "",  # Model for summaries (empty = use main model)
         },
         "smart_model_routing": {
             "enabled": False,
@@ -1915,6 +1915,9 @@ class HermesCLI:
                 tool_progress_callback=self._on_tool_progress,
                 stream_delta_callback=self._stream_delta if self.streaming_enabled else None,
             )
+            # Route agent status output through prompt_toolkit so ANSI escape
+            # sequences aren't garbled by patch_stdout's StdoutProxy (#2262).
+            self.agent._print_fn = _cprint
             self._active_agent_route_signature = (
                 effective_model,
                 runtime.get("provider"),
@@ -2325,10 +2328,9 @@ class HermesCLI:
         Inspired by OpenAI Codex's separation of interrupt (stop current turn)
         from /stop (clean up background processes). See openai/codex#14602.
         """
-        from tools.process_registry import get_registry
+        from tools.process_registry import process_registry
 
-        registry = get_registry()
-        processes = registry.list_processes()
+        processes = process_registry.list_sessions()
         running = [p for p in processes if p.get("status") == "running"]
 
         if not running:
@@ -2336,7 +2338,7 @@ class HermesCLI:
             return
 
         print(f"  Stopping {len(running)} background process(es)...")
-        killed = registry.kill_all()
+        killed = process_registry.kill_all()
         print(f"  ✅ Stopped {killed} process(es).")
 
     def _handle_paste_command(self):
@@ -4238,13 +4240,18 @@ class HermesCLI:
             elif not self.show_reasoning:
                 self.agent.reasoning_callback = None
 
+        # Use raw ANSI codes via _cprint so the output is routed through
+        # prompt_toolkit's renderer.  self.console.print() with Rich markup
+        # writes directly to stdout which patch_stdout's StdoutProxy mangles
+        # into garbled sequences like '?[33mTool progress: NEW?[0m' (#2262).
+        from hermes_cli.colors import Colors as _Colors
         labels = {
-            "off": "[dim]Tool progress: OFF[/] — silent mode, just the final response.",
-            "new": "[yellow]Tool progress: NEW[/] — show each new tool (skip repeats).",
-            "all": "[green]Tool progress: ALL[/] — show every tool call.",
-            "verbose": "[bold green]Tool progress: VERBOSE[/] — full args, results, think blocks, and debug logs.",
+            "off": f"{_Colors.DIM}Tool progress: OFF{_Colors.RESET} — silent mode, just the final response.",
+            "new": f"{_Colors.YELLOW}Tool progress: NEW{_Colors.RESET} — show each new tool (skip repeats).",
+            "all": f"{_Colors.GREEN}Tool progress: ALL{_Colors.RESET} — show every tool call.",
+            "verbose": f"{_Colors.BOLD}{_Colors.GREEN}Tool progress: VERBOSE{_Colors.RESET} — full args, results, think blocks, and debug logs.",
         }
-        self.console.print(labels.get(self.tool_progress_mode, ""))
+        _cprint(labels.get(self.tool_progress_mode, ""))
 
     def _handle_reasoning_command(self, cmd: str):
         """Handle /reasoning — manage effort level and display toggle.
