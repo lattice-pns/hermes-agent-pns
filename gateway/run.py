@@ -1457,6 +1457,9 @@ class GatewayRunner:
         3. DM pairing approved list
         4. Global allow-all (GATEWAY_ALLOW_ALL_USERS=true)
         5. Default: deny
+
+        Lattice SSE notifications routed into another platform (``lattice_routed``)
+        are always allowed — the Lattice connection is already authenticated.
         """
         # Home Assistant events are system-generated (state changes), not
         # user-initiated messages.  The HASS_TOKEN already authenticates the
@@ -1469,6 +1472,11 @@ class GatewayRunner:
         # Lattice notifications are push-in from our own SSE subscription;
         # Ed25519 auth already authenticates the connection.
         if source.platform == Platform.LATTICE:
+            return True
+
+        # Lattice routes into the target platform (e.g. Telegram) with
+        # platform=TELEGRAM — still treat as pre-authorized.
+        if source.lattice_routed:
             return True
 
         user_id = source.user_id
