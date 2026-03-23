@@ -204,6 +204,14 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "Exa",
+                "tag": "Neural web search and URL contents (see https://exa.ai)",
+                "web_backend": "exa",
+                "env_vars": [
+                    {"key": "EXA_API_KEY", "prompt": "Exa API key", "url": "https://dashboard.exa.ai/api-keys"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "tag": "Free - run your own instance",
                 "web_backend": "firecrawl",
