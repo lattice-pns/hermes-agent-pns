@@ -12,11 +12,32 @@ from gateway.platforms.lattice import (
     check_lattice_requirements,
     get_lattice_public_key,
 )
+from gateway.session import SessionSource
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 
 TEST_PRIVKEY_HEX = "00" * 32
 RECIPIENT_HEX = "ab" * 32
+
+
+class TestLatticeRoutedAuthorization:
+    """Lattice-routed Telegram events must not hit user allowlists (group chat_id ≠ user id)."""
+
+    def test_lattice_routed_always_authorized(self):
+        gw = GatewayRunner.__new__(GatewayRunner)
+        gw.config = GatewayConfig()
+        gw.pairing_store = MagicMock()
+        gw.pairing_store.is_approved.return_value = False
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1001234567890",
+            chat_type="dm",
+            user_id=None,
+            lattice_routed=True,
+        )
+        with patch.dict("os.environ", {}, clear=True):
+            assert gw._is_user_authorized(source) is True
 
 
 class TestGatewayRunnerLatticeWiring:
@@ -183,6 +204,9 @@ class TestLatticeAdapterNotifications:
         assert "topic alerts" in event.text
         assert "bb" * 32 in event.text
         assert "ping" in event.text
+        assert event.source.lattice_routed is True
+        assert event.source.user_id is None
+        assert event.source.chat_type == "dm"
 
     @pytest.mark.asyncio
     async def test_fallback_message_handler(self, monkeypatch):

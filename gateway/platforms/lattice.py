@@ -346,7 +346,8 @@ class LatticeAdapter(BasePlatformAdapter):
             platform=target_platform,
             chat_id=target_chat_id,
             chat_type="dm",
-            user_id=target_chat_id,
+            user_id=None,
+            lattice_routed=True,
         )
         logger.debug(
             "Lattice: routing notification to session %s:%s",
