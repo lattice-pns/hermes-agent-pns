@@ -3005,6 +3005,10 @@ def setup_tools(config: dict, first_install: bool = False):
     Both `hermes setup tools` and `hermes tools` use the same flow:
     platform selection → toolset toggles → provider/API key configuration.
 
+    Web search (Exa, Tavily, Firecrawl, …): enable the web toolset under a
+    platform, then choose **Reconfigure an existing tool** in the tools menu
+    (unless keys are already present — web will appear in that list once enabled).
+
     Args:
         first_install: When True, uses the simplified first-install flow
             (no platform menu, prompts for all unconfigured API keys).
