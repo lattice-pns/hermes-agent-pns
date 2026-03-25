@@ -2673,12 +2673,6 @@ def setup_gateway(config: dict):
         if url:
             save_env_value("LATTICE_URL", url.rstrip("/"))
             print_success("Lattice URL saved")
-            topics = prompt(
-                "Topics to subscribe (comma-separated, leave empty for all)"
-            )
-            if topics:
-                save_env_value("LATTICE_TOPICS", topics.replace(" ", ""))
-                print_success("Lattice topics saved")
             try:
                 from gateway.platforms.lattice import get_lattice_public_key
                 pubkey = get_lattice_public_key()
