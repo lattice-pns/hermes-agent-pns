@@ -3969,6 +3969,10 @@ class GatewayRunner:
         _EPHEMERAL_PROMPT = (
             "You have received an incoming push notification and are processing it "
             "autonomously in the background. The user is NOT watching this conversation.\n\n"
+            "The conversation history above (if any) is the main message thread between "
+            "the user and the agent. Use it as context to understand what the user has "
+            "been working on, their preferences, and any ongoing tasks — but do NOT "
+            "continue or reply to that thread directly.\n\n"
             "Your job:\n"
             "1. Analyse the notification.\n"
             "2. Use your tools to take any necessary actions (reply to the sender, update "
@@ -4050,6 +4054,33 @@ class GatewayRunner:
             turn_route = self._resolve_turn_agent_config(body, model, runtime_kwargs)
 
             def run_sync():
+                # Load the main session's conversation history so the sub-agent
+                # has context about what the user has been working on.
+                main_history = []
+                if hasattr(self, "session_store") and self.session_store is not None:
+                    try:
+                        main_session_key = self._session_key_for_source(source)
+                        self.session_store._ensure_loaded()
+                        main_entry = self.session_store._entries.get(main_session_key)
+                        if main_entry:
+                            raw_history = self.session_store.load_transcript(main_entry.session_id)
+                            for msg in raw_history:
+                                role = msg.get("role")
+                                if not role or role in ("session_meta", "system"):
+                                    continue
+                                has_tool_calls = "tool_calls" in msg
+                                has_tool_call_id = "tool_call_id" in msg
+                                is_tool_message = role == "tool"
+                                if has_tool_calls or has_tool_call_id or is_tool_message:
+                                    main_history.append({k: v for k, v in msg.items() if k != "timestamp"})
+                                elif msg.get("content"):
+                                    main_history.append({"role": role, "content": msg["content"]})
+                    except Exception:
+                        logger.debug(
+                            "Lattice notification %s: failed to load main session history",
+                            task_id, exc_info=True,
+                        )
+
                 agent = AIAgent(
                     model=turn_route["model"],
                     **turn_route["runtime"],
@@ -4070,7 +4101,11 @@ class GatewayRunner:
                     fallback_model=self._fallback_model,
                     ephemeral_system_prompt=_EPHEMERAL_PROMPT,
                 )
-                return agent.run_conversation(user_message=body, task_id=task_id)
+                return agent.run_conversation(
+                    user_message=body,
+                    task_id=task_id,
+                    conversation_history=main_history or None,
+                )
 
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(None, run_sync)
