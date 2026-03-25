@@ -856,13 +856,6 @@ OPTIONAL_ENV_VARS = {
         "category": "messaging",
         "advanced": True,
     },
-    "LATTICE_TOPICS": {
-        "description": "Comma-separated Lattice topics to subscribe to",
-        "prompt": "Lattice Topics",
-        "url": None,
-        "password": False,
-        "category": "messaging",
-    },
     "WEBHOOK_ENABLED": {
         "description": "Enable the webhook platform adapter for receiving events from GitHub, GitLab, etc.",
         "prompt": "Enable webhooks (true/false)",

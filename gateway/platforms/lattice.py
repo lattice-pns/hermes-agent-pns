@@ -8,14 +8,12 @@ which will call agent.interrupt() if an agent is running or start a new conversa
 Configuration:
 - LATTICE_URL env var (optional; defaults to https://pns.1lattice.co)
 - LATTICE_PRIVATE_KEY_HEX (optional; auto-generated and persisted on first run)
-- LATTICE_TOPICS (optional; comma-separated topics to subscribe to)
 
 Session routing:
 - Lattice never uses its own session — messages always route to the main platform
   (first connected platform with home channel or allowlist user).
 
-SSE notification JSON may include optional fields: `from` (sender pubkey hex),
-`topic` (topic name when delivered from POST /push/topic).
+SSE notification JSON may include optional field `from` (sender pubkey hex).
 
 Lattice auth: Ed25519 keypair. Sign payload ";{unix_timestamp}" for GET requests.
 """
@@ -133,8 +131,6 @@ class LatticeAdapter(BasePlatformAdapter):
         extra = config.extra or {}
         url = extra.get("url") or os.getenv("LATTICE_URL", DEFAULT_LATTICE_URL)
         self._lattice_url: str = url.rstrip("/")
-        topics = extra.get("topics") or os.getenv("LATTICE_TOPICS", "")
-        self._topics: str = topics.strip()
 
         self._privkey_hex: str = ""
         self.client: httpx.AsyncClient | None = None
@@ -143,11 +139,7 @@ class LatticeAdapter(BasePlatformAdapter):
         self.gateway_runner = None  # Injected by gateway for cross-platform delivery
         self._last_event_id: str = ""
 
-        logger.info(
-            "Lattice adapter initialized: url=%s topics=%s",
-            self._lattice_url,
-            self._topics or "(none)",
-        )
+        logger.info("Lattice adapter initialized: url=%s", self._lattice_url)
 
     async def connect(self) -> bool:
         """Connect to Lattice and start SSE listener."""
@@ -188,11 +180,7 @@ class LatticeAdapter(BasePlatformAdapter):
 
     async def _sse_listener(self) -> None:
         """Listen for SSE events from Lattice server."""
-        topics_param = f"topics={self._topics}" if self._topics else ""
-        path = "/subscribe"
-        if topics_param:
-            path = f"{path}?{topics_param}"
-        url = f"{self._lattice_url}{path}"
+        url = f"{self._lattice_url}/subscribe"
         backoff = SSE_RETRY_DELAY_INITIAL
 
         while self._running:
@@ -280,13 +268,11 @@ class LatticeAdapter(BasePlatformAdapter):
             try:
                 data = json.loads(data_str) if data_str else {}
                 device_token = data.get("pubkey", "")
-                topics = data.get("topics", [])
                 logger.info(
-                    "Lattice: connected — device token=%s topics=%s",
+                    "Lattice: connected — device token=%s",
                     device_token[:16] + "..."
                     if len(device_token) > 16
                     else device_token,
-                    topics,
                 )
             except json.JSONDecodeError:
                 logger.debug("Lattice: connected event (raw): %s", data_str[:100])
@@ -307,16 +293,11 @@ class LatticeAdapter(BasePlatformAdapter):
 
         body = data.get("body", "")
         sender = (data.get("from") or "").strip()  # optional sender pubkey hex
-        topic = (
-            data.get("topic") or ""
-        ).strip()  # optional; set for /push/topic broadcasts
 
         text = body or "(empty notification)"
 
         # Bracket label frames this as a Lattice push (not plain user input).
         inner = "incoming push notification"
-        if topic:
-            inner += f" on topic {topic}"
         if sender:
             inner += f" from agent {sender}"
         label = f"[{inner}]"

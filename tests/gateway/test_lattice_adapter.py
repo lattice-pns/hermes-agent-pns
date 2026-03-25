@@ -76,14 +76,6 @@ class TestLatticeAdapterInit:
         adapter = LatticeAdapter(cfg)
         assert adapter._lattice_url == "https://custom.example"
 
-    def test_topics_from_extra(self):
-        cfg = PlatformConfig(
-            enabled=True,
-            extra={"url": "http://x", "topics": " a , b "},
-        )
-        adapter = LatticeAdapter(cfg)
-        assert adapter._topics == "a , b"
-
 
 class TestGetLatticePublicKey:
     def test_returns_hex_when_key_in_env(self, monkeypatch):
@@ -191,7 +183,6 @@ class TestLatticeAdapterNotifications:
                 {
                     "body": "ping",
                     "from": "bb" * 32,
-                    "topic": "alerts",
                 }
             )
         )
@@ -201,7 +192,6 @@ class TestLatticeAdapterNotifications:
         assert isinstance(event, MessageEvent)
         assert event.message_type == MessageType.TEXT
         assert "incoming push notification" in event.text
-        assert "topic alerts" in event.text
         assert "bb" * 32 in event.text
         assert "ping" in event.text
         assert event.source.lattice_routed is True
@@ -238,7 +228,7 @@ class TestDispatchSseEvent:
         await adapter._dispatch_sse_event(
             "connected",
             "evt-1",
-            json.dumps({"pubkey": "abc123", "topics": ["t1"]}),
+            json.dumps({"pubkey": "abc123"}),
         )
         assert adapter._last_event_id == "evt-1"
 

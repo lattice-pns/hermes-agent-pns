@@ -774,9 +774,6 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             config.platforms[Platform.LATTICE] = PlatformConfig()
         config.platforms[Platform.LATTICE].enabled = True
         config.platforms[Platform.LATTICE].extra["url"] = lattice_url
-        lattice_topics = os.getenv("LATTICE_TOPICS", "")
-        if lattice_topics:
-            config.platforms[Platform.LATTICE].extra["topics"] = lattice_topics
         privkey = os.getenv("LATTICE_PRIVATE_KEY_HEX")
         if privkey:
             config.platforms[Platform.LATTICE].token = privkey
