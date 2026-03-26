@@ -307,7 +307,6 @@ class LatticeAdapter(BasePlatformAdapter):
         logger.info(
             "Lattice: dispatching notification from %s",
             (chat_id[:16] + "...") if len(chat_id) > 16 else chat_id,
-            text,
         )
         event = MessageEvent(
             text=text,
@@ -333,6 +332,7 @@ class LatticeAdapter(BasePlatformAdapter):
         Agents that intentionally want to reply to another agent should use the
         lattice_send tool directly.
         """
+        logger.info("Lattice thought to %s:\n\n%s", chat_id, content)
         return SendResult(success=True)
 
     async def get_chat_info(self, chat_id: str) -> dict:
