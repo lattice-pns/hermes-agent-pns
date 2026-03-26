@@ -2439,8 +2439,9 @@ def _update_via_zip(args):
                 cwd=PROJECT_ROOT, check=True, env=uv_env,
             )
     else:
-        venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-        pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+        # Use sys.executable to explicitly call the venv's pip module,
+        # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu
+        pip_cmd = [sys.executable, "-m", "pip"]
         try:
             subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
         except subprocess.CalledProcessError:
@@ -2752,8 +2753,9 @@ def cmd_update(args):
                     cwd=PROJECT_ROOT, check=True, env=uv_env,
                 )
         else:
-            venv_pip = PROJECT_ROOT / "venv" / ("Scripts" if sys.platform == "win32" else "bin") / "pip"
-            pip_cmd = [str(venv_pip)] if venv_pip.exists() else ["pip"]
+            # Use sys.executable to explicitly call the venv's pip module,
+            # avoiding PEP 668 'externally-managed-environment' errors on Debian/Ubuntu
+            pip_cmd = [sys.executable, "-m", "pip"]
             try:
                 subprocess.run(pip_cmd + ["install", "-e", ".[all]", "--quiet"], cwd=PROJECT_ROOT, check=True)
             except subprocess.CalledProcessError:
@@ -2812,7 +2814,10 @@ def cmd_update(args):
                 print(f"  ℹ️  {len(missing_config)} new config option(s) available")
             
             print()
-            response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            if sys.stdin.isatty():
+                response = input("Would you like to configure them now? [Y/n]: ").strip().lower()
+            else:
+                response = "n"
             
             if response in ('', 'y', 'yes'):
                 print()
@@ -3839,6 +3844,13 @@ For more help on a command:
     sessions_browse.add_argument("--source", help="Filter by source (cli, telegram, discord, etc.)")
     sessions_browse.add_argument("--limit", type=int, default=50, help="Max sessions to load (default: 50)")
 
+    def _confirm_prompt(prompt: str) -> bool:
+        """Prompt for y/N confirmation, safe against non-TTY environments."""
+        try:
+            return input(prompt).strip().lower() in ("y", "yes")
+        except (EOFError, KeyboardInterrupt):
+            return False
+
     def cmd_sessions(args):
         import json as _json
         try:
@@ -3899,8 +3911,7 @@ For more help on a command:
                 print(f"Session '{args.session_id}' not found.")
                 return
             if not args.yes:
-                confirm = input(f"Delete session '{resolved_session_id}' and all its messages? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete session '{resolved_session_id}' and all its messages? [y/N] "):
                     print("Cancelled.")
                     return
             if db.delete_session(resolved_session_id):
@@ -3912,8 +3923,7 @@ For more help on a command:
             days = args.older_than
             source_msg = f" from '{args.source}'" if args.source else ""
             if not args.yes:
-                confirm = input(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] ")
-                if confirm.lower() not in ("y", "yes"):
+                if not _confirm_prompt(f"Delete all ended sessions older than {days} days{source_msg}? [y/N] "):
                     print("Cancelled.")
                     return
             count = db.prune_sessions(older_than_days=days, source=args.source)
