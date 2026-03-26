@@ -4926,7 +4926,7 @@ class AIAgent:
         elif function_name == "lattice_session_search":
             if not self._session_db:
                 return json.dumps({"success": False, "error": "Session database not available."})
-            from tools.lattice_session_search_tool import lattice_session_search as _lattice_ss
+            from tools.lattice_tool import lattice_session_search as _lattice_ss
             return _lattice_ss(
                 query=function_args.get("query", ""),
                 limit=function_args.get("limit", 3),
@@ -5268,7 +5268,7 @@ class AIAgent:
                 if not self._session_db:
                     function_result = json.dumps({"success": False, "error": "Session database not available."})
                 else:
-                    from tools.lattice_session_search_tool import lattice_session_search as _lattice_ss
+                    from tools.lattice_tool import lattice_session_search as _lattice_ss
                     function_result = _lattice_ss(
                         query=function_args.get("query", ""),
                         limit=function_args.get("limit", 3),
