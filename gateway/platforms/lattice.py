@@ -304,9 +304,10 @@ class LatticeAdapter(BasePlatformAdapter):
             chat_type="dm",
             user_id=sender if sender else None,
         )
-        logger.debug(
+        logger.info(
             "Lattice: dispatching notification from %s",
             (chat_id[:16] + "...") if len(chat_id) > 16 else chat_id,
+            text,
         )
         event = MessageEvent(
             text=text,
