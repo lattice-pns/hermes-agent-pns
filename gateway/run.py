@@ -2355,14 +2355,14 @@ class GatewayRunner:
 
         if source.platform == Platform.LATTICE:
             context_prompt += (
-                "\n\n[System note: You are processing an incoming Lattice agent-to-agent "
-                "notification autonomously. The user is NOT watching this conversation.\n\n"
+                "\n\n[System note: You are processing an incoming Lattice "
+                "notification autonomously. It may be either a direct notification or a "
+                "message originating from another agent. The user is NOT watching this "
+                "conversation.\n\n"
                 "Guidelines:\n"
                 "- Analyse the notification and take any necessary actions using your tools.\n"
                 "- Default to silent handling. Do not send any outbound message unless there "
                 "is a clear reason.\n"
-                "- Direct agent-to-agent replies are currently disabled on this platform, so "
-                "do not try to continue a back-and-forth conversation with the sender.\n"
                 "- If the notification can be handled locally, do so silently and stop once "
                 "the requested work is complete.\n"
                 "- Use `lattice_notify_user` only if human input, permission, or urgent "
