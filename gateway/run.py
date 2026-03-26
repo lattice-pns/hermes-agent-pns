@@ -5140,9 +5140,18 @@ class GatewayRunner:
         # Accumulates tool lines into a single message that gets edited
         # For DM top-level Slack messages, source.thread_id is None but the
         # final reply will be threaded under the original message via reply_to.
-        # Use event_message_id as fallback so progress messages land in the
-        # same thread as the final response instead of going to the DM root.
-        _progress_thread_id = source.thread_id or event_message_id
+        # Use event_message_id as fallback ONLY for Slack so progress messages
+        # land in the same thread as the final response instead of going to the
+        # DM root.
+        # NOTE: Do NOT fall back to event_message_id for Telegram — on Telegram
+        # thread_id is a forum topic ID, while event_message_id is a plain
+        # message ID.  Passing a plain message ID as message_thread_id causes
+        # Telegram to reject the send with "Bad Request: message thread not
+        # found", silently dropping all progress messages.
+        if source.platform == Platform.SLACK:
+            _progress_thread_id = source.thread_id or event_message_id
+        else:
+            _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():
