@@ -141,8 +141,8 @@ TOOLSETS = {
     },
 
     "lattice": {
-        "description": "Agent-to-agent messaging: send messages to other AI agents via Lattice",
-        "tools": ["lattice_send", "lattice_get_pubkey"],
+        "description": "Agent-to-agent messaging: send messages to other AI agents via Lattice, search Lattice notification threads, and notify the human on their main platform",
+        "tools": ["lattice_send", "lattice_get_pubkey", "lattice_session_search", "lattice_notify_user"],
         "includes": []
     },
     
