@@ -76,7 +76,8 @@ _ensure_ssl_certs()
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+from hermes_constants import get_hermes_home
+_hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
 # User-managed env files should override stale shell exports on restart.
@@ -805,6 +806,7 @@ class GatewayRunner:
         "medium", "low", "minimal", "none". Returns None to use default
         (medium).
         """
+        from hermes_constants import parse_reasoning_effort
         effort = ""
         try:
             import yaml as _y
@@ -817,16 +819,10 @@ class GatewayRunner:
             pass
         if not effort:
             effort = os.getenv("HERMES_REASONING_EFFORT", "")
-        if not effort:
-            return None
-        effort = effort.lower().strip()
-        if effort == "none":
-            return {"enabled": False}
-        valid = ("xhigh", "high", "medium", "low", "minimal")
-        if effort in valid:
-            return {"enabled": True, "effort": effort}
-        logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
-        return None
+        result = parse_reasoning_effort(effort)
+        if effort and effort.strip() and result is None:
+            logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+        return result
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -1765,9 +1761,6 @@ class GatewayRunner:
         if canonical == "stop":
             return await self._handle_stop_command(event)
         
-        if canonical == "model":
-            return await self._handle_model_command(event)
-
         if canonical == "reasoning":
             return await self._handle_reasoning_command(event)
 
@@ -2485,7 +2478,8 @@ class GatewayRunner:
                 history=history,
                 source=source,
                 session_id=session_entry.session_id,
-                session_key=session_key
+                session_key=session_key,
+                event_message_id=event.message_id,
             )
 
             # Stop persistent typing indicator now that the agent is done
@@ -2858,196 +2852,6 @@ class GatewayRunner:
             pass
         return "\n".join(lines)
     
-    async def _handle_model_command(self, event: MessageEvent) -> str:
-        """Handle /model command - show or change the current model."""
-        import yaml
-        from hermes_cli.models import (
-            curated_models_for_provider,
-            normalize_provider,
-            _PROVIDER_LABELS,
-        )
-
-        args = event.get_command_args().strip()
-        config_path = _hermes_home / 'config.yaml'
-
-        # Resolve current model and provider from config
-        current = os.getenv("HERMES_MODEL") or "anthropic/claude-opus-4.6"
-        current_provider = "openrouter"
-        try:
-            if config_path.exists():
-                with open(config_path, encoding="utf-8") as f:
-                    cfg = yaml.safe_load(f) or {}
-                model_cfg = cfg.get("model", {})
-                if isinstance(model_cfg, str):
-                    current = model_cfg
-                elif isinstance(model_cfg, dict):
-                    current = model_cfg.get("default", current)
-                    current_provider = model_cfg.get("provider", current_provider)
-        except Exception:
-            pass
-
-        # Resolve "auto" to the actual provider using credential detection
-        current_provider = normalize_provider(current_provider)
-        if current_provider == "auto":
-            try:
-                from hermes_cli.auth import resolve_provider as _resolve_provider
-                current_provider = _resolve_provider(current_provider)
-            except Exception:
-                current_provider = "openrouter"
-
-        # Detect custom endpoint: provider resolved to openrouter but a custom
-        # base URL is configured — the user set up a custom endpoint.
-        if current_provider == "openrouter" and os.getenv("OPENAI_BASE_URL", "").strip():
-            current_provider = "custom"
-
-        if not args:
-            # If a fallback model is active, show it instead of config
-            if self._effective_model:
-                eff_provider = self._effective_provider or 'unknown'
-                eff_label = _PROVIDER_LABELS.get(eff_provider, eff_provider)
-                cfg_label = _PROVIDER_LABELS.get(current_provider, current_provider)
-                lines = [
-                    f"🤖 **Active model:** `{self._effective_model}` (fallback)",
-                    f"**Provider:** {eff_label}",
-                    f"**Primary model** (`{current}` via {cfg_label}) is rate-limited.",
-                    "",
-                ]
-                lines.append("To change: `/model model-name`")
-                lines.append("Switch provider: `/model provider:model-name`")
-                return "\n".join(lines)
-
-            provider_label = _PROVIDER_LABELS.get(current_provider, current_provider)
-            lines = [
-                f"🤖 **Current model:** `{current}`",
-                f"**Provider:** {provider_label}",
-            ]
-            # Show custom endpoint URL when using a custom provider
-            if current_provider == "custom":
-                from hermes_cli.models import _get_custom_base_url
-                custom_url = _get_custom_base_url() or os.getenv("OPENAI_BASE_URL", "")
-                if custom_url:
-                    lines.append(f"**Endpoint:** `{custom_url}`")
-            lines.append("")
-            curated = curated_models_for_provider(current_provider)
-            if curated:
-                lines.append(f"**Available models ({provider_label}):**")
-                for mid, desc in curated:
-                    marker = " ←" if mid == current else ""
-                    label = f"  _{desc}_" if desc else ""
-                    lines.append(f"• `{mid}`{label}{marker}")
-                lines.append("")
-            lines.append("To change: `/model model-name`")
-            lines.append("Switch provider: `/model provider-name` or `/model provider:model-name`")
-            return "\n".join(lines)
-
-        # Handle bare "/model custom" — switch to custom provider
-        # and auto-detect the model from the endpoint.
-        if args.strip().lower() == "custom":
-            from hermes_cli.model_switch import switch_to_custom_provider
-            cust_result = switch_to_custom_provider()
-            if not cust_result.success:
-                return f"⚠️ {cust_result.error_message}"
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                if "model" not in user_config or not isinstance(user_config["model"], dict):
-                    user_config["model"] = {}
-                user_config["model"]["default"] = cust_result.model
-                user_config["model"]["provider"] = "custom"
-                user_config["model"]["base_url"] = cust_result.base_url
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
-            except Exception as e:
-                return f"⚠️ Failed to save model change: {e}"
-            os.environ["HERMES_MODEL"] = cust_result.model
-            os.environ["HERMES_INFERENCE_PROVIDER"] = "custom"
-            self._effective_model = None
-            self._effective_provider = None
-            return (
-                f"🤖 Model changed to `{cust_result.model}` (saved to config)\n"
-                f"**Provider:** Custom\n"
-                f"**Endpoint:** `{cust_result.base_url}`\n"
-                f"_Model auto-detected from endpoint. Takes effect on next message._"
-            )
-
-        # Core model-switching pipeline (shared with CLI)
-        from hermes_cli.model_switch import switch_model
-
-        # Resolve current base_url for is_custom detection
-        _resolved_base = ""
-        try:
-            from hermes_cli.runtime_provider import resolve_runtime_provider as _rtp
-            _resolved_base = _rtp(requested=current_provider).get("base_url", "")
-        except Exception:
-            pass
-
-        result = switch_model(
-            args,
-            current_provider,
-            current_base_url=_resolved_base,
-            current_api_key=os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY") or "",
-        )
-
-        if not result.success:
-            msg = result.error_message
-            tip = "\n\nUse `/model` to see available models, `/provider` to see providers" if "Did you mean" not in msg else ""
-            return f"⚠️ {msg}{tip}"
-
-        # Persist to config only if validation approves
-        if result.persist:
-            try:
-                user_config = {}
-                if config_path.exists():
-                    with open(config_path, encoding="utf-8") as f:
-                        user_config = yaml.safe_load(f) or {}
-                if "model" not in user_config or not isinstance(user_config["model"], dict):
-                    user_config["model"] = {}
-                user_config["model"]["default"] = result.new_model
-                if result.provider_changed:
-                    user_config["model"]["provider"] = result.target_provider
-                    # Persist base_url for custom endpoints; clear when
-                    # switching away from custom (#2562 Phase 2).
-                    if result.base_url and "openrouter.ai" not in (result.base_url or ""):
-                        user_config["model"]["base_url"] = result.base_url
-                    else:
-                        user_config["model"].pop("base_url", None)
-                with open(config_path, 'w', encoding="utf-8") as f:
-                    yaml.dump(user_config, f, default_flow_style=False, sort_keys=False)
-            except Exception as e:
-                return f"⚠️ Failed to save model change: {e}"
-
-        # Set env vars so the next agent run picks up the change
-        os.environ["HERMES_MODEL"] = result.new_model
-        if result.provider_changed:
-            os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
-
-        provider_note = f"\n**Provider:** {result.provider_label}" if result.provider_changed else ""
-
-        warning = ""
-        if result.warning_message:
-            warning = f"\n⚠️ {result.warning_message}"
-
-        persist_note = "saved to config" if result.persist else "this session only — will revert on restart"
-
-        # Clear fallback state since user explicitly chose a model
-        self._effective_model = None
-        self._effective_provider = None
-
-        # Show endpoint info for custom providers
-        custom_hint = ""
-        if result.is_custom_target:
-            endpoint = result.base_url or _resolved_base or "custom endpoint"
-            custom_hint = f"\n**Endpoint:** `{endpoint}`"
-            if not result.provider_changed:
-                custom_hint += (
-                    "\n_To switch providers, use_ `/model provider:model`"
-                    "\n_e.g._ `/model openrouter:anthropic/claude-sonnet-4`"
-                )
-
-        return f"🤖 Model changed to `{result.new_model}` ({persist_note}){provider_note}{warning}{custom_hint}\n_(takes effect on next message)_"
-
     async def _handle_provider_command(self, event: MessageEvent) -> str:
         """Handle /provider command - show available providers."""
         import yaml
@@ -5161,6 +4965,7 @@ class GatewayRunner:
         session_id: str,
         session_key: str = None,
         _interrupt_depth: int = 0,
+        event_message_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -5299,7 +5104,12 @@ class GatewayRunner:
         
         # Background task to send progress messages
         # Accumulates tool lines into a single message that gets edited
-        _progress_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        # For DM top-level Slack messages, source.thread_id is None but the
+        # final reply will be threaded under the original message via reply_to.
+        # Use event_message_id as fallback so progress messages land in the
+        # same thread as the final response instead of going to the DM root.
+        _progress_thread_id = source.thread_id or event_message_id
+        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         async def send_progress_messages():
             if not progress_queue:
@@ -5414,7 +5224,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": source.thread_id} if source.thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter:
@@ -5495,7 +5305,7 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": source.thread_id} if source.thread_id else None,
+                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
                         )
                         _stream_delta_cb = _stream_consumer.on_delta
                         stream_consumer_holder[0] = _stream_consumer
@@ -6057,7 +5867,7 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             except Exception:
                 pass
         else:
-            hermes_home = os.getenv("HERMES_HOME", "~/.hermes")
+            hermes_home = str(get_hermes_home())
             logger.error(
                 "Another gateway instance is already running (PID %d, HERMES_HOME=%s). "
                 "Use 'hermes gateway restart' to replace it, or 'hermes gateway stop' first.",

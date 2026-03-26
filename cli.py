@@ -70,10 +70,10 @@ _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
-from hermes_constants import OPENROUTER_BASE_URL
+from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 from hermes_cli.env_loader import load_hermes_dotenv
 
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 
@@ -112,21 +112,12 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
 
 
 def _parse_reasoning_config(effort: str) -> dict | None:
-    """Parse a reasoning effort level into an OpenRouter reasoning config dict.
-    
-    Valid levels: "xhigh", "high", "medium", "low", "minimal", "none".
-    Returns None to use the default (medium), or a config dict to override.
-    """
-    if not effort or not effort.strip():
-        return None
-    effort = effort.strip().lower()
-    if effort == "none":
-        return {"enabled": False}
-    valid = ("xhigh", "high", "medium", "low", "minimal")
-    if effort in valid:
-        return {"enabled": True, "effort": effort}
-    logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
-    return None
+    """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
+    from hermes_constants import parse_reasoning_effort
+    result = parse_reasoning_effort(effort)
+    if effort and effort.strip() and result is None:
+        logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
+    return result
 
 
 def load_cli_config() -> Dict[str, Any]:
@@ -1102,7 +1093,7 @@ class HermesCLI:
         # Match key to resolved base_url: OpenRouter URL → prefer OPENROUTER_API_KEY,
         # custom endpoint → prefer OPENAI_API_KEY (issue #560).
         # Note: _ensure_runtime_credentials() re-resolves this before first use.
-        if "openrouter.ai" in self.base_url:
+        if self.base_url and "openrouter.ai" in self.base_url:
             self.api_key = api_key or os.getenv("OPENROUTER_API_KEY") or os.getenv("OPENAI_API_KEY")
         else:
             self.api_key = api_key or os.getenv("OPENAI_API_KEY") or os.getenv("OPENROUTER_API_KEY")
@@ -2316,7 +2307,7 @@ class HermesCLI:
         """
         from hermes_cli.clipboard import save_clipboard_image
 
-        img_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "images"
+        img_dir = get_hermes_home() / "images"
         self._image_counter += 1
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
         img_path = img_dir / f"clip_{ts}_{self._image_counter}.png"
@@ -3012,10 +3003,10 @@ class HermesCLI:
         print(f"  {remaining} message(s) remaining in history.")
     
     def _show_model_and_providers(self):
-        """Unified /model and /provider display.
+        """Show current model + provider and list all authenticated providers.
 
         Shows current model + provider, then lists all authenticated
-        providers with their available models so users can switch easily.
+        providers with their available models.
         """
         from hermes_cli.models import (
             curated_models_for_provider, list_available_providers,
@@ -3064,9 +3055,9 @@ class HermesCLI:
                         print(f"      endpoint: {custom_url}")
                     if is_active:
                         print(f"      model: {self.model} ← current")
-                    print(f"      (use /model custom:<model-name>)")
+                    print(f"      (use hermes model to change)")
                 else:
-                    print(f"      (use /model {p['id']}:<model-name>)")
+                    print(f"      (use hermes model to change)")
                 print()
 
         if unauthed:
@@ -3075,15 +3066,7 @@ class HermesCLI:
             print(f"  Run: hermes setup")
             print()
 
-        print("  Switch model:    /model <model-name>")
-        print("  Switch provider: /model <provider>:<model-name>")
-        if authed and len(authed) > 1:
-            # Show a concrete example with a non-active provider
-            other = next((p for p in authed if p["id"] != current), authed[0])
-            other_models = curated_models_for_provider(other["id"])
-            if other_models:
-                example_model = other_models[0][0]
-                print(f"  Example: /model {other['id']}:{example_model}")
+        print("  To change model or provider, use: hermes model")
 
     def _handle_prompt_command(self, cmd: str):
         """Handle the /prompt command to view or set system prompt."""
@@ -3652,91 +3635,6 @@ class HermesCLI:
                     _cprint("  Session database not available.")
         elif canonical == "new":
             self.new_session()
-        elif canonical == "model":
-            # Use original case so model names like "Anthropic/Claude-Opus-4" are preserved
-            parts = cmd_original.split(maxsplit=1)
-            if len(parts) > 1:
-                from hermes_cli.model_switch import switch_model, switch_to_custom_provider
-
-                raw_input = parts[1].strip()
-
-                # Handle bare "/model custom" — switch to custom provider
-                # and auto-detect the model from the endpoint.
-                if raw_input.strip().lower() == "custom":
-                    result = switch_to_custom_provider()
-                    if result.success:
-                        self.model = result.model
-                        self.requested_provider = "custom"
-                        self.provider = "custom"
-                        self.api_key = result.api_key
-                        self.base_url = result.base_url
-                        self.agent = None
-                        save_config_value("model.default", result.model)
-                        save_config_value("model.provider", "custom")
-                        save_config_value("model.base_url", result.base_url)
-                        print(f"(^_^)b Model changed to: {result.model} [provider: Custom]")
-                        print(f"  Endpoint: {result.base_url}")
-                        print(f"  Status: connected (model auto-detected)")
-                    else:
-                        print(f"(>_<) {result.error_message}")
-                    return True
-
-                # Core model-switching pipeline (shared with gateway)
-                current_provider = self.provider or self.requested_provider or "openrouter"
-                result = switch_model(
-                    raw_input,
-                    current_provider,
-                    current_base_url=self.base_url or "",
-                    current_api_key=self.api_key or "",
-                )
-
-                if not result.success:
-                    print(f"(>_<) {result.error_message}")
-                    if "Did you mean" not in result.error_message:
-                        print(f"  Model unchanged: {self.model}")
-                        if "credentials" not in result.error_message.lower():
-                            print("  Tip: Use /model to see available models, /provider to see providers")
-                else:
-                    self.model = result.new_model
-                    self.agent = None  # Force re-init
-
-                    if result.provider_changed:
-                        self.requested_provider = result.target_provider
-                        self.provider = result.target_provider
-                        self.api_key = result.api_key
-                        self.base_url = result.base_url
-
-                    provider_note = f" [provider: {result.provider_label}]" if result.provider_changed else ""
-
-                    if result.persist:
-                        saved_model = save_config_value("model.default", result.new_model)
-                        if result.provider_changed:
-                            save_config_value("model.provider", result.target_provider)
-                            # Persist base_url for custom endpoints; clear
-                            # when switching away from custom (#2562 Phase 2).
-                            if result.base_url and "openrouter.ai" not in (result.base_url or ""):
-                                save_config_value("model.base_url", result.base_url)
-                            else:
-                                save_config_value("model.base_url", None)
-                        if saved_model:
-                            print(f"(^_^)b Model changed to: {result.new_model}{provider_note} (saved to config)")
-                        else:
-                            print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
-                    else:
-                        print(f"(^_^) Model changed to: {result.new_model}{provider_note} (this session only)")
-                        if result.warning_message:
-                            print(f"  Reason: {result.warning_message}")
-                        print("  Note: Model will revert on restart. Use a verified model to save to config.")
-
-                    # Show endpoint info for custom providers
-                    if result.is_custom_target:
-                        endpoint = result.base_url or self.base_url or "custom endpoint"
-                        print(f"  Endpoint: {endpoint}")
-                        if not result.provider_changed:
-                            print(f"  Tip: To switch providers, use /model provider:model")
-                            print(f"       e.g. /model openai-codex:gpt-5.2-codex")
-            else:
-                self._show_model_and_providers()
         elif canonical == "provider":
             self._show_model_and_providers()
         elif canonical == "prompt":
@@ -6240,10 +6138,6 @@ class HermesCLI:
                     return
                 # Accept the selected completion
                 buf.apply_completion(completion)
-                # If text now looks like "/model provider:", re-trigger completions
-                text = buf.document.text_before_cursor
-                if text.startswith("/model ") and text.endswith(":"):
-                    buf.start_completion()
             elif buf.suggestion and buf.suggestion.text:
                 # No completion menu, but there's a ghost text auto-suggestion — accept it
                 buf.insert_text(buf.suggestion.text)
@@ -6472,12 +6366,31 @@ class HermesCLI:
             When the terminal supports bracketed paste, Ctrl+V / Cmd+V
             triggers this with the pasted text.  We also check the
             clipboard for an image on every paste event.
+
+            Large pastes (5+ lines) are collapsed to a file reference
+            placeholder while preserving any existing user text in the
+            buffer.
             """
             pasted_text = event.data or ""
             if self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
-                event.current_buffer.insert_text(pasted_text)
+                line_count = pasted_text.count('\n')
+                buf = event.current_buffer
+                if line_count >= 5 and not buf.text.strip().startswith('/'):
+                    _paste_counter[0] += 1
+                    paste_dir = _hermes_home / "pastes"
+                    paste_dir.mkdir(parents=True, exist_ok=True)
+                    paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
+                    paste_file.write_text(pasted_text, encoding="utf-8")
+                    placeholder = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
+                    prefix = ""
+                    if buf.cursor_position > 0 and buf.text[buf.cursor_position - 1] != '\n':
+                        prefix = "\n"
+                    _paste_just_collapsed[0] = True
+                    buf.insert_text(prefix + placeholder)
+                else:
+                    buf.insert_text(pasted_text)
 
         @kb.add('c-v')
         def handle_ctrl_v(event):
@@ -6519,35 +6432,9 @@ class HermesCLI:
         # Create the input area with multiline (shift+enter), autocomplete, and paste handling
         from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 
-        def _get_model_completer_info() -> dict:
-            """Return provider/model info for /model autocomplete."""
-            try:
-                from hermes_cli.models import (
-                    _PROVIDER_LABELS, normalize_provider, provider_model_ids,
-                )
-                current = getattr(cli_ref, "provider", None) or getattr(cli_ref, "requested_provider", "openrouter")
-                current = normalize_provider(current)
-
-                # Provider map: id -> label (only providers with known models)
-                providers = {}
-                for pid, plabel in _PROVIDER_LABELS.items():
-                    providers[pid] = plabel
-
-                def models_for(provider_name: str) -> list[str]:
-                    norm = normalize_provider(provider_name)
-                    return provider_model_ids(norm)
-
-                return {
-                    "current_provider": current,
-                    "providers": providers,
-                    "models_for": models_for,
-                }
-            except Exception:
-                return {}
 
         _completer = SlashCommandCompleter(
             skill_commands_provider=lambda: _skill_commands,
-            model_completer_provider=_get_model_completer_info,
         )
         input_area = TextArea(
             height=Dimension(min=1, max=8, preferred=1),
@@ -6590,15 +6477,25 @@ class HermesCLI:
         # Paste collapsing: detect large pastes and save to temp file
         _paste_counter = [0]
         _prev_text_len = [0]
+        _paste_just_collapsed = [False]
 
         def _on_text_changed(buf):
-            """Detect large pastes and collapse them to a file reference."""
+            """Detect large pastes and collapse them to a file reference.
+
+            When bracketed paste is available, handle_paste collapses
+            large pastes directly.  This handler is a fallback for
+            terminals without bracketed paste support.
+            """
             text = buf.text
-            line_count = text.count('\n')
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
+            if _paste_just_collapsed[0]:
+                _paste_just_collapsed[0] = False
+                return
+            line_count = text.count('\n')
             # Heuristic: a real paste adds many characters at once (not just a
             # single newline from Alt+Enter) AND the result has 5+ lines.
+            # Fallback for terminals without bracketed paste support.
             if line_count >= 5 and chars_added > 1 and not text.startswith('/'):
                 _paste_counter[0] += 1
                 # Save to temp file
@@ -6607,7 +6504,7 @@ class HermesCLI:
                 paste_file = paste_dir / f"paste_{_paste_counter[0]}_{datetime.now().strftime('%H%M%S')}.txt"
                 paste_file.write_text(text, encoding="utf-8")
                 # Replace buffer with compact reference
-                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines → {paste_file}]"
+                buf.text = f"[Pasted text #{_paste_counter[0]}: {line_count + 1} lines \u2192 {paste_file}]"
                 buf.cursor_position = len(buf.text)
 
         input_area.buffer.on_text_changed += _on_text_changed
@@ -7122,23 +7019,33 @@ class HermesCLI:
                     
                     # Expand paste references back to full content
                     import re as _re
-                    paste_match = _re.match(r'\[Pasted text #\d+: \d+ lines → (.+)\]', user_input) if isinstance(user_input, str) else None
-                    if paste_match:
-                        paste_path = Path(paste_match.group(1))
+                    _paste_ref_re = _re.compile(r'\[Pasted text #\d+: \d+ lines \u2192 (.+?)\]')
+                    paste_refs = list(_paste_ref_re.finditer(user_input)) if isinstance(user_input, str) else []
+                    if paste_refs:
+                        def _expand_ref(m):
+                            p = Path(m.group(1))
+                            return p.read_text(encoding="utf-8") if p.exists() else m.group(0)
+                        expanded = _paste_ref_re.sub(_expand_ref, user_input)
+                        total_lines = expanded.count('\n') + 1
+                        n_pastes = len(paste_refs)
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
-                        if paste_path.exists():
-                            full_text = paste_path.read_text(encoding="utf-8")
-                            line_count = full_text.count('\n') + 1
-                            print()
-                            ChatConsole().print(_user_bar)
+                        print()
+                        ChatConsole().print(_user_bar)
+                        # Show any surrounding user text alongside the paste summary
+                        split_parts = _paste_ref_re.split(user_input)
+                        visible_user_text = " ".join(
+                            split_parts[i].strip() for i in range(0, len(split_parts), 2) if split_parts[i].strip()
+                        )
+                        if visible_user_text:
                             ChatConsole().print(
-                                f"[bold {_accent_hex()}]●[/] [bold]{_escape(f'[Pasted text: {line_count} lines]')}[/]"
+                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(visible_user_text)}[/] "
+                                f"[dim]({n_pastes} pasted block{'s' if n_pastes > 1 else ''}, {total_lines} lines total)[/]"
                             )
-                            user_input = full_text
                         else:
-                            print()
-                            ChatConsole().print(_user_bar)
-                            ChatConsole().print(f"[bold {_accent_hex()}]●[/] [bold]{_escape(user_input)}[/]")
+                            ChatConsole().print(
+                                f"[bold {_accent_hex()}]\u25cf[/] [bold]{_escape(f'[Pasted text: {total_lines} lines]')}[/]"
+                            )
+                        user_input = expanded
                     else:
                         _user_bar = f"[{_accent_hex()}]{'─' * 40}[/]"
                         if '\n' in user_input:

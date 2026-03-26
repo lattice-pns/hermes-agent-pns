@@ -45,11 +45,13 @@ import fire
 from datetime import datetime
 from pathlib import Path
 
+from hermes_constants import get_hermes_home
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 from hermes_cli.env_loader import load_hermes_dotenv
 
-_hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+_hermes_home = get_hermes_home()
 _project_env = Path(__file__).parent / '.env'
 _loaded_env_paths = load_hermes_dotenv(hermes_home=_hermes_home, project_env=_project_env)
 if _loaded_env_paths:
@@ -855,7 +857,7 @@ class AIAgent:
             self.session_id = f"{timestamp_str}_{short_uuid}"
         
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
-        hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+        hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self.session_log_file = self.logs_dir / f"session_{self.session_id}.json"
@@ -1811,6 +1813,32 @@ class AIAgent:
         if len(key) <= 12:
             return "***"
         return f"{key[:8]}...{key[-4:]}"
+
+    def _clean_error_message(self, error_msg: str) -> str:
+        """
+        Clean up error messages for user display, removing HTML content and truncating.
+        
+        Args:
+            error_msg: Raw error message from API or exception
+            
+        Returns:
+            Clean, user-friendly error message
+        """
+        if not error_msg:
+            return "Unknown error"
+            
+        # Remove HTML content (common with CloudFlare and gateway error pages)
+        if error_msg.strip().startswith('<!DOCTYPE html') or '<html' in error_msg:
+            return "Service temporarily unavailable (HTML error page returned)"
+            
+        # Remove newlines and excessive whitespace
+        cleaned = ' '.join(error_msg.split())
+        
+        # Truncate if too long
+        if len(cleaned) > 150:
+            cleaned = cleaned[:150] + "..."
+            
+        return cleaned
 
     def _dump_api_request_debug(
         self,
@@ -3599,6 +3627,10 @@ class AIAgent:
         request_client_holder = {"client": None}
         first_delta_fired = {"done": False}
         deltas_were_sent = {"yes": False}  # Track if any deltas were fired (for fallback)
+        # Wall-clock timestamp of the last real streaming chunk.  The outer
+        # poll loop uses this to detect stale connections that keep receiving
+        # SSE keep-alive pings but no actual data.
+        last_chunk_time = {"t": time.time()}
 
         def _fire_first_delta():
             if not first_delta_fired["done"] and on_first_delta:
@@ -3639,6 +3671,8 @@ class AIAgent:
             usage_obj = None
 
             for chunk in stream:
+                last_chunk_time["t"] = time.time()
+
                 if self._interrupt_requested:
                     break
 
@@ -3876,10 +3910,31 @@ class AIAgent:
                 if request_client is not None:
                     self._close_request_openai_client(request_client, reason="stream_request_complete")
 
+        _stream_stale_timeout = float(os.getenv("HERMES_STREAM_STALE_TIMEOUT", 90.0))
+
         t = threading.Thread(target=_call, daemon=True)
         t.start()
         while t.is_alive():
             t.join(timeout=0.3)
+
+            # Detect stale streams: connections kept alive by SSE pings
+            # but delivering no real chunks.  Kill the client so the
+            # inner retry loop can start a fresh connection.
+            if time.time() - last_chunk_time["t"] > _stream_stale_timeout:
+                logger.warning(
+                    "Stream stale for %.0fs — no chunks received. Killing connection.",
+                    _stream_stale_timeout,
+                )
+                try:
+                    rc = request_client_holder.get("client")
+                    if rc is not None:
+                        self._close_request_openai_client(rc, reason="stale_stream_kill")
+                except Exception:
+                    pass
+                # Reset the timer so we don't kill repeatedly while
+                # the inner thread processes the closure.
+                last_chunk_time["t"] = time.time()
+
             if self._interrupt_requested:
                 try:
                     if self.api_mode == "anthropic_messages":
@@ -6004,7 +6059,8 @@ class AIAgent:
                         
                         self._vprint(f"{self.log_prefix}⚠️  Invalid API response (attempt {retry_count}/{max_retries}): {', '.join(error_details)}", force=True)
                         self._vprint(f"{self.log_prefix}   🏢 Provider: {provider_name}", force=True)
-                        self._vprint(f"{self.log_prefix}   📝 Provider message: {error_msg[:200]}", force=True)
+                        cleaned_provider_error = self._clean_error_message(error_msg)
+                        self._vprint(f"{self.log_prefix}   📝 Provider message: {cleaned_provider_error}", force=True)
                         self._vprint(f"{self.log_prefix}   ⏱️  Response time: {api_duration:.2f}s (fast response often indicates rate limiting)", force=True)
                         
                         if retry_count >= max_retries:
@@ -6318,7 +6374,8 @@ class AIAgent:
                     self._vprint(f"{self.log_prefix}⚠️  API call failed (attempt {retry_count}/{max_retries}): {error_type}", force=True)
                     self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                     self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
-                    self._vprint(f"{self.log_prefix}   📝 Error: {str(api_error)[:200]}", force=True)
+                    cleaned_error = self._clean_error_message(str(api_error))
+                    self._vprint(f"{self.log_prefix}   📝 Error: {cleaned_error}", force=True)
                     self._vprint(f"{self.log_prefix}   ⏱️  Elapsed: {elapsed_time:.2f}s  Context: {len(api_messages)} msgs, ~{approx_tokens:,} tokens")
                     
                     # Check for interrupt before deciding to retry
@@ -6327,7 +6384,7 @@ class AIAgent:
                         self._persist_session(messages, conversation_history)
                         self.clear_interrupt()
                         return {
-                            "final_response": f"Operation interrupted: handling API error ({error_type}: {str(api_error)[:80]}).",
+                            "final_response": f"Operation interrupted: handling API error ({error_type}: {self._clean_error_message(str(api_error))}).",
                             "messages": messages,
                             "api_calls": api_call_count,
                             "completed": False,
@@ -6608,6 +6665,11 @@ class AIAgent:
             if restart_with_compressed_messages:
                 api_call_count -= 1
                 self.iteration_budget.refund()
+                # Count compression restarts toward the retry limit to prevent
+                # infinite loops when compression reduces messages but not enough
+                # to fit the context window.
+                retry_count += 1
+                restart_with_compressed_messages = False
                 continue
 
             if restart_with_length_continuation:
