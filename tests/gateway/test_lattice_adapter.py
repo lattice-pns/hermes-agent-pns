@@ -487,7 +487,7 @@ class TestLatticeNotificationBackground:
         sid, note = appended[0]
         assert sid == existing_session_id
         assert note["role"] == "user"
-        assert "[background notification processed]" in note["content"]
+        assert "[background notification processed — handled silently]" in note["content"]
         assert "server CPU at 95%" in note["content"]
         assert "silent" in note["content"]
 
