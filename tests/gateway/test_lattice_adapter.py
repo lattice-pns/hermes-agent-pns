@@ -73,51 +73,18 @@ class TestGetLatticePublicKey:
 
 class TestLatticeAdapterSend:
     @pytest.mark.asyncio
-    async def test_not_connected(self):
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://x"})
-        adapter = LatticeAdapter(cfg)
-        adapter.client = None
-        result = await adapter.send("to_key", "hello")
-        assert result.success is False
-        assert "Not connected" in (result.error or "")
-
-    @pytest.mark.asyncio
-    async def test_send_success(self, monkeypatch):
-        monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
+    async def test_send_is_noop(self):
+        """send() is a no-op — the gateway must not echo responses back to senders.
+        Agents use the lattice_send tool explicitly when they want to reply."""
         cfg = PlatformConfig(enabled=True, extra={"url": "http://lattice.test"})
         adapter = LatticeAdapter(cfg)
-        adapter._privkey_hex = TEST_PRIVKEY_HEX
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 200
-        mock_resp.raise_for_status = MagicMock()
-
         mock_client = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.post = AsyncMock()
         adapter.client = mock_client
 
         result = await adapter.send(RECIPIENT_HEX, "hello there")
         assert result.success is True
-        mock_client.post.assert_awaited_once()
-        assert mock_client.post.await_args[0][0] == "http://lattice.test/send"
-
-    @pytest.mark.asyncio
-    async def test_send_404(self, monkeypatch):
-        monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://lattice.test"})
-        adapter = LatticeAdapter(cfg)
-        adapter._privkey_hex = TEST_PRIVKEY_HEX
-
-        mock_resp = MagicMock()
-        mock_resp.status_code = 404
-
-        mock_client = MagicMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        adapter.client = mock_client
-
-        result = await adapter.send(RECIPIENT_HEX, "x")
-        assert result.success is False
-        assert result.error == "Agent not connected"
+        mock_client.post.assert_not_awaited()
 
 
 class TestLatticeAdapterGetChatInfo:

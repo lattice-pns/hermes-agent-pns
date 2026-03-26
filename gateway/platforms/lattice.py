@@ -33,7 +33,7 @@ from gateway.platforms.base import (
     SendResult,
 )
 from gateway.session import SessionSource
-from tools.lattice_auth import get_auth_headers, get_post_auth_headers
+from tools.lattice_auth import get_auth_headers
 
 logger = logging.getLogger(__name__)
 
@@ -327,37 +327,12 @@ class LatticeAdapter(BasePlatformAdapter):
         reply_to: str | None = None,
         metadata: dict | None = None,
     ) -> SendResult:
-        """Send a message to another agent via Lattice /send endpoint."""
-        if not self.client:
-            return SendResult(success=False, error="Not connected")
-
-        body = {"to": chat_id, "body": content}
-        body_str = json.dumps(body, separators=(",", ":"), ensure_ascii=False)
-        body_bytes = body_str.encode("utf-8")
-        headers = {
-            "Content-Type": "application/json",
-            **get_post_auth_headers(self._privkey_hex, body_str),
-        }
-        try:
-            resp = await self.client.post(
-                f"{self._lattice_url}/send", content=body_bytes, headers=headers
-            )
-            if resp.status_code == 404:
-                return SendResult(success=False, error="Agent not connected")
-            if resp.status_code == 401:
-                pubkey_hex = headers.get("X-Agent-Pubkey", "")
-                logger.warning(
-                    "Lattice 401: pubkey=%s...%s to=%s body=%r",
-                    pubkey_hex[:8],
-                    pubkey_hex[-8:],
-                    chat_id[:16],
-                    body_str,
-                )
-            resp.raise_for_status()
-            return SendResult(success=True)
-        except Exception as e:
-            logger.warning("Lattice send failed: %s", e)
-            return SendResult(success=False, error=str(e))
+        """No-op: the gateway calls this with the agent's final response, but we
+        don't echo it back to the sender — that would create an infinite loop.
+        Agents that intentionally want to reply to another agent should use the
+        lattice_send tool directly.
+        """
+        return SendResult(success=True)
 
     async def get_chat_info(self, chat_id: str) -> dict:
         """Return minimal chat info."""
