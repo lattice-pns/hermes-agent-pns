@@ -2353,6 +2353,22 @@ class GatewayRunner:
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
 
+        if source.platform == Platform.LATTICE:
+            context_prompt += (
+                "\n\n[System note: You are processing an incoming Lattice agent-to-agent "
+                "notification autonomously. The user is NOT watching this conversation.\n\n"
+                "Guidelines:\n"
+                "- Analyse the notification and take any necessary actions using your tools.\n"
+                "- Use `lattice_send` to reply directly to the sending agent when a response "
+                "is expected or useful. The sender's public key is in the message metadata.\n"
+                "- Use `lattice_notify_user` if the notification requires the user's attention "
+                "or awareness (e.g. urgent alerts, requests that need human judgment).\n"
+                "- Default to silent handling — most notifications can be processed and "
+                "actioned without disturbing the user.\n"
+                "- Your final response text is stored in the session transcript but is NOT "
+                "delivered anywhere. Use the tools above for any outbound communication.]"
+            )
+
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
         #
