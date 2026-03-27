@@ -41,26 +41,38 @@ class TestGatewayRunnerLatticeWiring:
         assert isinstance(adapter, LatticeAdapter)
 
 
-def _make_lattice_event(text: str = "hello") -> MessageEvent:
+_HOME_CHAT_ID = "99"
+_SESSION_TARGET = {"platform": "telegram", "chat_id": _HOME_CHAT_ID}
+
+
+def _make_lattice_event(
+    text: str = "hello", lattice_sender: str = None
+) -> MessageEvent:
+    """Create a forwarded Lattice notification event (source = home platform)."""
     return MessageEvent(
         text=text,
         source=SessionSource(
-            platform=Platform.LATTICE,
-            chat_id="ab" * 32,
+            platform=Platform.TELEGRAM,
+            chat_id=_HOME_CHAT_ID,
             chat_type="dm",
         ),
         message_id="m1",
+        lattice_sender=lattice_sender or ("ab" * 32),
     )
 
 
 def _make_runner_for_lattice_message_flow() -> GatewayRunner:
     runner = GatewayRunner.__new__(GatewayRunner)
     runner.config = GatewayConfig(
-        platforms={Platform.LATTICE: PlatformConfig(enabled=True, extra={})}
+        platforms={
+            Platform.LATTICE: PlatformConfig(
+                enabled=True, extra={"session_target": _SESSION_TARGET}
+            )
+        }
     )
     adapter = MagicMock()
     adapter.send = AsyncMock()
-    runner.adapters = {Platform.LATTICE: adapter}
+    runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
 
@@ -69,7 +81,7 @@ def _make_runner_for_lattice_message_flow() -> GatewayRunner:
         session_id="lattice-session-1",
         created_at=datetime.now(),
         updated_at=datetime.now(),
-        platform=Platform.LATTICE,
+        platform=Platform.TELEGRAM,
         chat_type="dm",
     )
     runner.session_store = MagicMock()
@@ -112,13 +124,17 @@ class TestCheckLatticeRequirements:
 
 class TestGatewayRunnerLatticeHomePrompt:
     @pytest.mark.asyncio
-    async def test_first_lattice_message_skips_home_channel_prompt(self, monkeypatch):
+    async def test_forwarded_lattice_notification_skips_home_channel_prompt(
+        self, monkeypatch
+    ):
+        """Forwarded Lattice notifications (lattice_sender set) must not trigger the
+        'no home channel' prompt — the home channel is already set by definition."""
         import gateway.run as gateway_run
 
         runner = _make_runner_for_lattice_message_flow()
-        event = _make_lattice_event()
+        event = _make_lattice_event()  # has lattice_sender set
 
-        monkeypatch.delenv("LATTICE_HOME_CHANNEL", raising=False)
+        monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
         monkeypatch.setattr(
             gateway_run,
             "_resolve_runtime_agent_kwargs",
@@ -134,16 +150,24 @@ class TestGatewayRunnerLatticeHomePrompt:
         assert result == "ok"
         sent_messages = [
             call.args[1]
-            for call in runner.adapters[Platform.LATTICE].send.await_args_list
+            for call in runner.adapters[Platform.TELEGRAM].send.await_args_list
             if len(call.args) >= 2
         ]
-        assert all("No home channel is set for Lattice" not in msg for msg in sent_messages)
+        assert all("No home channel is set" not in msg for msg in sent_messages)
 
     @pytest.mark.asyncio
-    async def test_sethome_on_lattice_returns_session_target_guidance(self):
+    async def test_sethome_on_lattice_platform_returns_session_target_guidance(self):
+        """The LATTICE platform source still returns the session_target guidance message."""
         runner = GatewayRunner.__new__(GatewayRunner)
-
-        result = await runner._handle_set_home_command(_make_lattice_event("/sethome"))
+        lattice_event = MessageEvent(
+            text="/sethome",
+            source=SessionSource(
+                platform=Platform.LATTICE,
+                chat_id="ab" * 32,
+                chat_type="dm",
+            ),
+        )
+        result = await runner._handle_set_home_command(lattice_event)
 
         assert "does not use `/sethome`" in result
         assert "lattice.session_target" in result
@@ -203,10 +227,13 @@ class TestLatticeAdapterGetChatInfo:
 
 class TestLatticeAdapterNotifications:
     @pytest.mark.asyncio
-    async def test_routes_to_message_handler_with_lattice_platform(self, monkeypatch):
-        """Notifications are dispatched as LATTICE platform sessions via _message_handler."""
+    async def test_routes_to_home_session(self, monkeypatch):
+        """Notifications are forwarded to the home (main) session, not a LATTICE session."""
         monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://x"})
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"url": "http://x", "session_target": _SESSION_TARGET},
+        )
         adapter = LatticeAdapter(cfg)
 
         handler = AsyncMock()
@@ -221,18 +248,22 @@ class TestLatticeAdapterNotifications:
         event = handler.await_args.args[0]
         assert isinstance(event, MessageEvent)
         assert event.message_type == MessageType.TEXT
-        assert event.text == f"[from agent {sender}]\nping"
-        assert event.source.platform == Platform.LATTICE
-        assert event.source.chat_id == sender
-        assert event.source.user_id == sender
+        assert event.text == "ping"
+        assert event.source.platform == Platform.TELEGRAM
+        assert event.source.chat_id == _HOME_CHAT_ID
+        assert event.source.user_id is None
         assert event.source.chat_type == "dm"
+        assert event.lattice_sender == sender
         assert event.raw_message.get("from") == sender
 
     @pytest.mark.asyncio
-    async def test_anonymous_notification_uses_lattice_chat_id(self, monkeypatch):
-        """Notifications without a sender get chat_id='lattice'."""
+    async def test_anonymous_notification_routes_to_home_session(self, monkeypatch):
+        """Notifications without a sender also route to the home session; lattice_sender=None."""
         monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://x"})
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"url": "http://x", "session_target": _SESSION_TARGET},
+        )
         adapter = LatticeAdapter(cfg)
 
         handler = AsyncMock()
@@ -242,15 +273,18 @@ class TestLatticeAdapterNotifications:
 
         handler.assert_awaited_once()
         event = handler.await_args.args[0]
-        assert event.source.platform == Platform.LATTICE
-        assert event.source.chat_id == "lattice"
-        assert event.source.user_id is None
+        assert event.source.platform == Platform.TELEGRAM
+        assert event.source.chat_id == _HOME_CHAT_ID
+        assert event.lattice_sender == "SYSTEM"
 
     @pytest.mark.asyncio
     async def test_drops_silently_without_message_handler(self, monkeypatch):
         """No handler and no crash — notification dropped with a warning log."""
         monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://x"})
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={"url": "http://x", "session_target": _SESSION_TARGET},
+        )
         adapter = LatticeAdapter(cfg)
         # No _message_handler set
 
@@ -258,17 +292,26 @@ class TestLatticeAdapterNotifications:
         await adapter._process_notification(json.dumps({"body": "only"}))
 
     @pytest.mark.asyncio
-    async def test_no_session_target_required_for_routing(self, monkeypatch):
-        """session_target is no longer required for routing (only needed by notify_user tool)."""
+    async def test_session_target_used_for_routing(self, monkeypatch):
+        """session_target determines the home platform and chat_id for the forwarded event."""
         monkeypatch.setenv("LATTICE_PRIVATE_KEY_HEX", TEST_PRIVKEY_HEX)
-        cfg = PlatformConfig(enabled=True, extra={"url": "http://x"})
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "url": "http://x",
+                "session_target": {"platform": "discord", "chat_id": "chan-42"},
+            },
+        )
         adapter = LatticeAdapter(cfg)
 
         handler = AsyncMock()
         adapter._message_handler = handler
 
-        await adapter._process_notification(json.dumps({"body": "no target needed"}))
+        await adapter._process_notification(json.dumps({"body": "routed"}))
         handler.assert_awaited_once()
+        event = handler.await_args.args[0]
+        assert event.source.platform == Platform.DISCORD
+        assert event.source.chat_id == "chan-42"
 
     @pytest.mark.asyncio
     async def test_invalid_json_drops_silently(self, monkeypatch):
