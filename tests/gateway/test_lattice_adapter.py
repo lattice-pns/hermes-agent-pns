@@ -1,6 +1,8 @@
 """Tests for gateway/platforms/lattice.py — Lattice SSE adapter."""
 
+from datetime import datetime
 import json
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,7 +14,7 @@ from gateway.platforms.lattice import (
     check_lattice_requirements,
     get_lattice_public_key,
 )
-from gateway.session import SessionSource
+from gateway.session import SessionEntry, SessionSource, build_session_key
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 
@@ -39,9 +41,112 @@ class TestGatewayRunnerLatticeWiring:
         assert isinstance(adapter, LatticeAdapter)
 
 
+def _make_lattice_event(text: str = "hello") -> MessageEvent:
+    return MessageEvent(
+        text=text,
+        source=SessionSource(
+            platform=Platform.LATTICE,
+            chat_id="ab" * 32,
+            chat_type="dm",
+        ),
+        message_id="m1",
+    )
+
+
+def _make_runner_for_lattice_message_flow() -> GatewayRunner:
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(
+        platforms={Platform.LATTICE: PlatformConfig(enabled=True, extra={})}
+    )
+    adapter = MagicMock()
+    adapter.send = AsyncMock()
+    runner.adapters = {Platform.LATTICE: adapter}
+    runner._voice_mode = {}
+    runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_lattice_event().source),
+        session_id="lattice-session-1",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.LATTICE,
+        chat_type="dm",
+    )
+    runner.session_store = MagicMock()
+    runner.session_store.get_or_create_session.return_value = session_entry
+    runner.session_store.load_transcript.return_value = []
+    runner.session_store.has_any_sessions.return_value = True
+    runner.session_store.append_to_transcript = MagicMock()
+    runner.session_store.rewrite_transcript = MagicMock()
+    runner.session_store.update_session = MagicMock()
+    runner._running_agents = {}
+    runner._pending_messages = {}
+    runner._pending_approvals = {}
+    runner._session_db = None
+    runner._reasoning_config = None
+    runner._provider_routing = {}
+    runner._fallback_model = None
+    runner._show_reasoning = False
+    runner._is_user_authorized = lambda _source: True
+    runner._set_session_env = lambda _context: None
+    runner._should_send_voice_reply = lambda *_args, **_kwargs: False
+    runner._send_voice_reply = AsyncMock()
+    runner._capture_gateway_honcho_if_configured = lambda *args, **kwargs: None
+    runner._emit_gateway_run_progress = AsyncMock()
+    runner._run_agent = AsyncMock(
+        return_value={
+            "final_response": "ok",
+            "messages": [],
+            "tools": [],
+            "history_offset": 0,
+            "last_prompt_tokens": 0,
+        }
+    )
+    return runner
+
+
 class TestCheckLatticeRequirements:
     def test_always_true(self):
         assert check_lattice_requirements() is True
+
+
+class TestGatewayRunnerLatticeHomePrompt:
+    @pytest.mark.asyncio
+    async def test_first_lattice_message_skips_home_channel_prompt(self, monkeypatch):
+        import gateway.run as gateway_run
+
+        runner = _make_runner_for_lattice_message_flow()
+        event = _make_lattice_event()
+
+        monkeypatch.delenv("LATTICE_HOME_CHANNEL", raising=False)
+        monkeypatch.setattr(
+            gateway_run,
+            "_resolve_runtime_agent_kwargs",
+            lambda: {"api_key": "***"},
+        )
+        monkeypatch.setattr(
+            "agent.model_metadata.get_model_context_length",
+            lambda *_args, **_kwargs: 100000,
+        )
+
+        result = await runner._handle_message(event)
+
+        assert result == "ok"
+        sent_messages = [
+            call.args[1]
+            for call in runner.adapters[Platform.LATTICE].send.await_args_list
+            if len(call.args) >= 2
+        ]
+        assert all("No home channel is set for Lattice" not in msg for msg in sent_messages)
+
+    @pytest.mark.asyncio
+    async def test_sethome_on_lattice_returns_session_target_guidance(self):
+        runner = GatewayRunner.__new__(GatewayRunner)
+
+        result = await runner._handle_set_home_command(_make_lattice_event("/sethome"))
+
+        assert "does not use `/sethome`" in result
+        assert "lattice.session_target" in result
 
 
 class TestLatticeAdapterInit:

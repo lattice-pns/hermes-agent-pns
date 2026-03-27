@@ -9,7 +9,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import Platform
-from tools.send_message_tool import _send_telegram, _send_to_platform, send_message_tool
+from tools.send_message_tool import (
+    _check_send_message,
+    _send_telegram,
+    _send_to_platform,
+    send_message_tool,
+)
 
 
 def _run_async_immediately(coro):
@@ -30,6 +35,16 @@ def _install_telegram_mock(monkeypatch, bot):
     telegram_mod = SimpleNamespace(Bot=lambda token: bot, constants=constants_mod)
     monkeypatch.setitem(sys.modules, "telegram", telegram_mod)
     monkeypatch.setitem(sys.modules, "telegram.constants", constants_mod)
+
+
+class TestCheckSendMessage:
+    def test_unavailable_on_lattice_platform(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "lattice")
+        assert _check_send_message() is False
+
+    def test_available_on_other_messaging_platforms(self, monkeypatch):
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
+        assert _check_send_message() is True
 
 
 class TestSendMessageTool:

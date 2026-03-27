@@ -669,6 +669,9 @@ async def _send_sms(auth_token, chat_id, message):
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
     platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+    # Lattice: outbound chat uses lattice_send / lattice_notify_user; send_message would be misleading.
+    if platform == "lattice":
+        return False
     if platform and platform != "local":
         return True
     try:

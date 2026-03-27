@@ -2346,8 +2346,14 @@ class GatewayRunner:
                 "Keep the introduction concise -- one or two sentences max.]"
             )
         
-        # One-time prompt if no home channel is set for this platform
-        if not history and source.platform and source.platform != Platform.LOCAL:
+        # One-time prompt if no home channel is set for this platform.
+        # Lattice routes notifications via session_target / the user's real
+        # messaging platform, so a Lattice "home channel" prompt is misleading.
+        if (
+            not history
+            and source.platform
+            and source.platform not in (Platform.LOCAL, Platform.LATTICE)
+        ):
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
             if not os.getenv(env_key):
@@ -3163,6 +3169,13 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
+
+        if source.platform == Platform.LATTICE:
+            return (
+                "Lattice does not use `/sethome` for delivery.\n"
+                "Set `lattice.session_target` in config.yaml, or set a home "
+                "channel on your real messaging platform (for example Telegram or Discord)."
+            )
         
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
         
